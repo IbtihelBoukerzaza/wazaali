@@ -1,20 +1,25 @@
-import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View } from 'react-native';
+import React, { useEffect } from 'react';
+import { StatusBar, I18nManager } from 'react-native';
+import { AuthProvider } from './src/context/AuthContext';
+import AuthNavigator from './src/navigation/AuthNavigator';
+
+// Force RTL for Arabic
+I18nManager.allowRTL(true);
+I18nManager.forceRTL(true);
 
 export default function App() {
+  useEffect(() => {
+    // Ensure RTL is applied
+    if (!I18nManager.isRTL) {
+      I18nManager.allowRTL(true);
+      I18nManager.forceRTL(true);
+    }
+  }, []);
+
   return (
-    <View style={styles.container}>
-      <Text>Open up App.js to start working on your app!</Text>
-      <StatusBar style="auto" />
-    </View>
+    <AuthProvider>
+      <AuthNavigator />
+      <StatusBar style="light" />
+    </AuthProvider>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#fff',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-});
