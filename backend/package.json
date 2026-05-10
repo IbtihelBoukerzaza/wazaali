@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Waze3li backend for email notifications",
   "main": "server.js",
+  "type": "module",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js"
