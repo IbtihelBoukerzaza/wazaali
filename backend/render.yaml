@@ -1,10 +1,9 @@
 services:
   - type: web
     name: waze3li-backend
-    runtime: node
-    runtimeVersion: 18.17.0
-    buildCommand: npm install
-    startCommand: node server.js
+    env: docker
+    buildCommand: docker build -t waze3li-backend .
+    startCommand: docker run -p 5000:5000 waze3li-backend
     autoDeploy: true
     plan: free
     rootDir: backend
