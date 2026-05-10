@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: waze3li-backend
+    env: node
+    nodeVersion: 18
+    buildCommand: npm install
+    startCommand: node server.js
+    autoDeploy: true
+    plan: free
+    rootDir: backend
