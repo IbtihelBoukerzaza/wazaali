@@ -2,9 +2,10 @@ import React, { useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, TextInput, Image, KeyboardAvoidingView, Platform, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../utils/colors';
-import { auth } from '../config/firebase';
+import { auth, db } from '../config/firebase';
 import { signInWithEmailAndPassword, sendPasswordResetEmail } from 'firebase/auth';
-import { getUserByUid } from '../services/firestoreService';
+import { doc, updateDoc } from 'firebase/firestore';
+import { getUserByUid, getUserByEmail } from '../services/firestoreService';
 import { useAuth } from '../context/AuthContext';
 
 // Custom LTR placeholder component
@@ -52,12 +53,44 @@ export default function LoginScreen({ navigation }) {
 
     setLoading(true);
     try {
+      // First check if user has a pending/rejected account (no Auth account yet)
+      const firestoreUser = await getUserByEmail(email);
+      if (firestoreUser && !firestoreUser.uid) {
+        // No Auth account exists yet — account is pending or rejected
+        if (firestoreUser.status === 'pending') {
+          Alert.alert('حساب قيد المراجعة', 'حسابك قيد المراجعة من قبل المسؤول. سيتم إشعارك عند الموافقة.');
+          setLoading(false);
+          return;
+        }
+        if (firestoreUser.status === 'rejected') {
+          Alert.alert('حساب مرفوض', 'تم رفض طلب تسجيلك من قبل المسؤول. يمكنك إنشاء حساب جديد بنفس البريد الإلكتروني.');
+          setLoading(false);
+          return;
+        }
+      }
+
       const userCredential = await signInWithEmailAndPassword(auth, email, password);
       const user = userCredential.user;
 
       // Fetch user data from Firestore
-      const userData = await getUserByUid(user.uid);
-      
+      let userData = await getUserByUid(user.uid);
+
+      // Fallback: if not found by UID, search by email (edge case: uid was not set during approval)
+      if (!userData) {
+        const firestoreUser = await getUserByEmail(email);
+        if (firestoreUser) {
+          userData = firestoreUser;
+          // Link the auth UID to the Firestore document for future logins
+          try {
+            const userRef = doc(db, 'users', firestoreUser.id);
+            await updateDoc(userRef, { uid: user.uid });
+            console.log('Linked auth UID to Firestore document:', user.uid);
+          } catch (linkError) {
+            console.error('Failed to link UID:', linkError);
+          }
+        }
+      }
+
       if (userData) {
         setUserRole(userData.role);
         setIsApproved(userData.approved);

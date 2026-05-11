@@ -1,21 +1,49 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator, Image } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator, Image, Dimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../utils/colors';
 import { useAuth } from '../context/AuthContext';
-import { getUserByUid, createOrderWithNotification } from '../services/firestoreService';
+import { getUserByUid, createOrderWithNotification, subscribeToNotifications } from '../services/firestoreService';
+import NotificationDropdown from '../components/NotificationDropdown';
+
+const { width } = Dimensions.get('window');
+
+const PRODUCT_TYPES = [
+  { id: 'حليب', label: 'حليب', icon: 'water' },
+  { id: 'ألبان', label: 'ألبان', icon: 'cafe' },
+  { id: 'أجبان', label: 'أجبان', icon: 'pie-chart' },
+  { id: 'زبدة', label: 'زبدة', icon: 'ellipse' },
+  { id: 'أخرى', label: 'أخرى', icon: 'ellipsis-horizontal' },
+];
 
 export default function ProductDetailScreen({ route, navigation }) {
-  const { product, dairy } = route.params;
+  const { product, dairy } = route.params || {};
+  
+  // Safety check - if no product, go back
+  if (!product) {
+    navigation.goBack();
+    return null;
+  }
   const { user } = useAuth();
   const [quantity, setQuantity] = useState(1);
   const [shopData, setShopData] = useState(null);
   const [ordering, setOrdering] = useState(false);
   const [imageError, setImageError] = useState(false);
+  const [notifications, setNotifications] = useState([]);
 
   useEffect(() => {
     loadShopData();
-  }, []);
+    if (user) {
+      const unsub = subscribeToNotifications(user.uid, (notifs) => {
+        setNotifications(notifs);
+      });
+      return () => unsub();
+    }
+  }, [user]);
+
+  const handleNotificationPress = () => {
+    navigation.navigate('طلباتي');
+  };
 
   const loadShopData = async () => {
     if (!user) return;
@@ -23,9 +51,24 @@ export default function ProductDetailScreen({ route, navigation }) {
     setShopData(data);
   };
 
-  const isAvailable = (product.stock || 0) > 0;
-  const maxOrderQty = product.stock || 0;
-  const totalPrice = product.price * quantity;
+  const isAvailable = (product?.stock || 0) > 0;
+  const maxOrderQty = product?.stock || 0;
+  const totalPrice = (product?.price || 0) * quantity;
+
+  const getTypeIcon = (type) => {
+    const found = PRODUCT_TYPES.find(t => t.id === type);
+    return found ? found.icon : 'cube';
+  };
+
+  const getStockStatus = (stock) => {
+    if (!stock || stock === 0) {
+      return { text: 'غير متوفر', color: colors.error, icon: 'close-circle' };
+    } else if (stock >= 1 && stock <= 20) {
+      return { text: `${stock} متبق`, color: colors.warning, icon: 'warning' };
+    } else {
+      return { text: 'متوفر', color: colors.success, icon: 'checkmark-circle' };
+    }
+  };
 
   const handlePlaceOrder = async () => {
     if (!isAvailable) {
@@ -71,10 +114,9 @@ export default function ProductDetailScreen({ route, navigation }) {
                   'تم إرسال طلبك بنجاح. ستتلقى إشعاراً عند الرد عليه.',
                   [
                     {
-                      text: 'طلباتي',
-                      onPress: () => navigation.navigate('MainApp'),
+                      text: 'حسناً',
+                      onPress: () => navigation.replace('DairyDetails', { dairy }),
                     },
-                    { text: 'حسناً' },
                   ]
                 );
               } else {
@@ -94,84 +136,110 @@ export default function ProductDetailScreen({ route, navigation }) {
 
   return (
     <View style={styles.container}>
+      {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
-          <Ionicons name="arrow-forward" size={24} color={colors.text.primary} />
-        </TouchableOpacity>
+        <NotificationDropdown
+          notifications={notifications}
+          userId={user?.uid}
+          onNotificationPress={handleNotificationPress}
+          onViewAllPress={() => navigation.navigate('Notifications')}
+        />
         <Text style={styles.headerTitle}>تفاصيل المنتج</Text>
-        <View style={{ width: 40 }} />
+        <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
+          <Ionicons name="chevron-back" size={24} color={colors.text.primary} />
+        </TouchableOpacity>
       </View>
 
-      <ScrollView showsVerticalScrollIndicator={false}>
-        {/* Product Image */}
-        <View style={styles.imageContainer}>
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+        {/* Product Hero Image */}
+        <View style={styles.heroImageContainer}>
           {product.image && !imageError ? (
             <Image
               source={{ uri: product.image }}
-              style={styles.productImage}
+              style={styles.heroImage}
               onError={() => setImageError(true)}
             />
           ) : (
-            <View style={styles.imagePlaceholder}>
-              <Ionicons name="cube-outline" size={64} color={colors.text.light} />
+            <View style={styles.heroImagePlaceholder}>
+              <Ionicons name={getTypeIcon(product.type) || 'cube-outline'} size={56} color={colors.text.light} />
             </View>
           )}
-          <View style={[styles.availabilityOverlay, { backgroundColor: isAvailable ? '#22C55E' : '#EF4444' }]}>
-            <Ionicons name={isAvailable ? 'checkmark-circle' : 'close-circle'} size={16} color="#FFFFFF" />
-            <Text style={styles.availabilityOverlayText}>
-              {isAvailable ? 'Disponible' : 'Non disponible'}
-            </Text>
+          {/* Availability Badge */}
+          <View style={[styles.availBadge, { backgroundColor: isAvailable ? '#22C55E' : '#EF4444' }]}>
+            <Ionicons name={isAvailable ? 'checkmark-circle' : 'close-circle'} size={14} color="#FFFFFF" />
+            <Text style={styles.availBadgeText}>{isAvailable ? 'متوفر' : 'غير متوفر'}</Text>
           </View>
+          {/* Type Tag */}
+          {product.type && (
+            <View style={styles.heroTypeTag}>
+              <Ionicons name={getTypeIcon(product.type)} size={12} color="#FFFFFF" />
+              <Text style={styles.heroTypeTagText}>{product.type}</Text>
+            </View>
+          )}
         </View>
 
-        {/* Product Info */}
-        <View style={styles.infoSection}>
-          <View style={styles.nameRow}>
-            <Text style={styles.productName}>{product.name}</Text>
-            <Text style={styles.productPrice}>{product.price} دج</Text>
+        {/* Product Info Card */}
+        <View style={styles.infoCard}>
+          {/* Name + Price Row */}
+          <View style={styles.namePriceRow}>
+            <View style={styles.nameCol}>
+              <Text style={styles.productName}>{product.name}</Text>
+              {product.type && (
+                <View style={styles.typePillSmall}>
+                  <Ionicons name={getTypeIcon(product.type)} size={12} color={colors.primary} />
+                  <Text style={styles.typePillSmallText}>{product.type}</Text>
+                </View>
+              )}
+            </View>
+            <View style={styles.priceCol}>
+              <Text style={styles.productPrice}>{product.price}</Text>
+              <Text style={styles.productPriceUnit}>دج / صندوق</Text>
+            </View>
           </View>
 
-          {product.category && (
-            <View style={styles.categoryBadge}>
-              <Text style={styles.categoryText}>{product.category}</Text>
-            </View>
-          )}
-
-          {product.description && (
-            <View style={styles.descriptionSection}>
-              <Text style={styles.sectionLabel}>الوصف</Text>
-              <Text style={styles.descriptionText}>{product.description}</Text>
-            </View>
-          )}
+          {/* Divider */}
+          <View style={styles.divider} />
 
           {/* Stock Info */}
-          <View style={styles.stockSection}>
-            <View style={styles.stockRow}>
-              <Ionicons name="cube-outline" size={20} color={colors.text.secondary} />
-              <Text style={styles.stockLabel}>الكمية المتوفرة</Text>
-              <Text style={[styles.stockValue, { color: isAvailable ? colors.success : colors.error }]}>
-                {product.stock || 0} صندوق
-              </Text>
+          <View style={styles.stockRow}>
+            <View style={[styles.stockIconWrap, { backgroundColor: getStockStatus(product.stock).color + '20' }]}>
+              <Ionicons name={getStockStatus(product.stock).icon} size={18} color={getStockStatus(product.stock).color} />
             </View>
+            <Text style={styles.stockLabel}>حالة المخزون</Text>
+            <Text style={[styles.stockValue, { color: getStockStatus(product.stock).color }]}>
+              {getStockStatus(product.stock).text}
+            </Text>
           </View>
+
+          {/* Description */}
+          {product.description ? (
+            <View style={styles.descSection}>
+              <Text style={styles.descLabel}>الوصف</Text>
+              <Text style={styles.descText}>{product.description}</Text>
+            </View>
+          ) : null}
 
           {/* Dairy Info */}
           <View style={styles.dairySection}>
-            <Text style={styles.sectionLabel}>الملبنة</Text>
+            <Text style={styles.dairyLabel}>الملبنة</Text>
             <View style={styles.dairyCard}>
               <View style={styles.dairyAvatar}>
-                <Ionicons name="business" size={24} color={colors.primary} />
+                {dairy.photoURL ? (
+                  <Image source={{ uri: dairy.photoURL }} style={styles.dairyAvatarImage} />
+                ) : (
+                  <Ionicons name="business" size={22} color={colors.primary} />
+                )}
               </View>
               <View style={styles.dairyInfo}>
                 <Text style={styles.dairyName}>{dairy.businessName || dairy.name}</Text>
                 {dairy.wilaya && (
                   <View style={styles.dairyLocationRow}>
-                    <Ionicons name="location-outline" size={14} color={colors.text.secondary} />
+                    <Ionicons name="location-outline" size={12} color={colors.text.secondary} />
                     <Text style={styles.dairyLocation}>{dairy.wilaya}</Text>
                   </View>
                 )}
               </View>
-              <Ionicons name="chevron-back" size={20} color={colors.text.light} />
+              <Ionicons name="chevron-back" size={18} color={colors.text.light} />
             </View>
           </View>
         </View>
@@ -179,35 +247,38 @@ export default function ProductDetailScreen({ route, navigation }) {
 
       {/* Bottom Order Bar */}
       <View style={styles.bottomBar}>
-        <View style={styles.quantitySection}>
+        <View style={styles.qtySection}>
           <TouchableOpacity
-            style={[styles.qtyButton, quantity <= 1 && styles.qtyButtonDisabled]}
+            style={[styles.qtyBtn, quantity <= 1 && styles.qtyBtnDisabled]}
             onPress={() => setQuantity(Math.max(1, quantity - 1))}
             disabled={quantity <= 1}
+            activeOpacity={0.7}
           >
-            <Ionicons name="remove" size={20} color={quantity <= 1 ? colors.text.light : colors.primary} />
+            <Ionicons name="remove" size={18} color={quantity <= 1 ? '#CBD5E1' : colors.primary} />
           </TouchableOpacity>
-          <Text style={styles.quantityText}>{quantity}</Text>
+          <Text style={styles.qtyText}>{quantity}</Text>
           <TouchableOpacity
-            style={[styles.qtyButton, quantity >= maxOrderQty && styles.qtyButtonDisabled]}
+            style={[styles.qtyBtn, quantity >= maxOrderQty && styles.qtyBtnDisabled]}
             onPress={() => setQuantity(Math.min(maxOrderQty, quantity + 1))}
             disabled={quantity >= maxOrderQty}
+            activeOpacity={0.7}
           >
-            <Ionicons name="add" size={20} color={quantity >= maxOrderQty ? colors.text.light : colors.primary} />
+            <Ionicons name="add" size={18} color={quantity >= maxOrderQty ? '#CBD5E1' : colors.primary} />
           </TouchableOpacity>
         </View>
 
         <TouchableOpacity
-          style={[styles.orderButton, (!isAvailable || ordering) && styles.orderButtonDisabled]}
+          style={[styles.orderBtn, (!isAvailable || ordering) && styles.orderBtnDisabled]}
           onPress={handlePlaceOrder}
           disabled={!isAvailable || ordering}
+          activeOpacity={0.8}
         >
           {ordering ? (
             <ActivityIndicator size="small" color="#FFFFFF" />
           ) : (
             <>
               <Ionicons name="cart" size={20} color="#FFFFFF" />
-              <Text style={styles.orderButtonText}>
+              <Text style={styles.orderBtnText}>
                 {isAvailable ? `طلب (${totalPrice} دج)` : 'غير متوفر'}
               </Text>
             </>
@@ -227,17 +298,17 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingTop: 60,
-    paddingBottom: 16,
-    backgroundColor: colors.surface,
+    paddingHorizontal: 20,
+    paddingTop: 25,
+    paddingBottom: 8,
+    backgroundColor: colors.background,
     borderBottomWidth: 1,
-    borderBottomColor: colors.border,
+    borderBottomColor: '#E5E7EB',
   },
   backButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: '#F0F0F0',
     justifyContent: 'center',
     alignItems: 'center',
@@ -247,23 +318,29 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: colors.text.primary,
   },
-  imageContainer: {
-    height: 240,
-    backgroundColor: '#F3F4F6',
+  scrollContent: {
+    paddingBottom: 100,
+  },
+
+  // Hero Image
+  heroImageContainer: {
+    height: 260,
+    backgroundColor: '#F1F5F9',
     position: 'relative',
   },
-  productImage: {
+  heroImage: {
     width: '100%',
     height: '100%',
     resizeMode: 'cover',
   },
-  imagePlaceholder: {
+  heroImagePlaceholder: {
     width: '100%',
     height: '100%',
     justifyContent: 'center',
     alignItems: 'center',
+    backgroundColor: '#F1F5F9',
   },
-  availabilityOverlay: {
+  availBadge: {
     position: 'absolute',
     top: 16,
     left: 16,
@@ -271,72 +348,108 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 12,
     paddingVertical: 6,
-    borderRadius: 20,
-    gap: 6,
+    borderRadius: 12,
+    gap: 5,
   },
-  availabilityOverlayText: {
+  availBadgeText: {
     color: '#FFFFFF',
-    fontSize: 13,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  heroTypeTag: {
+    position: 'absolute',
+    top: 16,
+    right: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 10,
+    gap: 4,
+  },
+  heroTypeTagText: {
+    color: '#FFFFFF',
+    fontSize: 12,
     fontWeight: '600',
   },
-  infoSection: {
-    padding: 16,
+
+  // Info Card
+  infoCard: {
+    backgroundColor: colors.surface,
+    marginHorizontal: 16,
+    marginTop: -24,
+    borderRadius: 20,
+    padding: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 5,
   },
-  nameRow: {
+  namePriceRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
-    marginBottom: 8,
   },
-  productName: {
-    fontSize: 22,
-    fontWeight: 'bold',
-    color: colors.text.primary,
+  nameCol: {
     flex: 1,
     marginRight: 12,
   },
-  productPrice: {
+  productName: {
     fontSize: 22,
-    fontWeight: 'bold',
-    color: colors.primary,
-  },
-  categoryBadge: {
-    backgroundColor: colors.primaryLight,
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 8,
-    alignSelf: 'flex-start',
-    marginBottom: 16,
-  },
-  categoryText: {
-    fontSize: 13,
-    color: colors.primary,
-    fontWeight: '600',
-  },
-  descriptionSection: {
-    marginBottom: 16,
-  },
-  sectionLabel: {
-    fontSize: 14,
-    fontWeight: 'bold',
+    fontWeight: '700',
     color: colors.text.primary,
     marginBottom: 8,
   },
-  descriptionText: {
-    fontSize: 15,
+  typePillSmall: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.primaryLight,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    alignSelf: 'flex-start',
+    gap: 4,
+  },
+  typePillSmallText: {
+    fontSize: 12,
+    color: colors.primary,
+    fontWeight: '600',
+  },
+  priceCol: {
+    alignItems: 'flex-end',
+  },
+  productPrice: {
+    fontSize: 28,
+    fontWeight: '700',
+    color: colors.primary,
+  },
+  productPriceUnit: {
+    fontSize: 12,
     color: colors.text.secondary,
-    lineHeight: 22,
+    marginTop: 2,
   },
-  stockSection: {
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 16,
+
+  divider: {
+    height: 1,
+    backgroundColor: '#E2E8F0',
+    marginVertical: 16,
   },
+
+  // Stock Row
   stockRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    marginBottom: 16,
+  },
+  stockIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 10,
   },
   stockLabel: {
     flex: 1,
@@ -345,95 +458,145 @@ const styles = StyleSheet.create({
   },
   stockValue: {
     fontSize: 16,
-    fontWeight: 'bold',
+    fontWeight: '700',
   },
-  dairySection: {
+
+  // Description
+  descSection: {
     marginBottom: 16,
+  },
+  descLabel: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.text.primary,
+    marginBottom: 6,
+  },
+  descText: {
+    fontSize: 14,
+    color: colors.text.secondary,
+    lineHeight: 22,
+  },
+
+  // Dairy Section
+  dairySection: {
+    marginBottom: 4,
+  },
+  dairyLabel: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.text.primary,
+    marginBottom: 8,
   },
   dairyCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: colors.surface,
-    borderRadius: 12,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 14,
     padding: 12,
   },
   dairyAvatar: {
     width: 44,
     height: 44,
-    borderRadius: 22,
+    borderRadius: 14,
     backgroundColor: colors.primaryLight,
     justifyContent: 'center',
     alignItems: 'center',
-    marginLeft: 12,
+    marginRight: 12,
+    overflow: 'hidden',
+  },
+  dairyAvatarImage: {
+    width: '100%',
+    height: '100%',
+    resizeMode: 'cover',
   },
   dairyInfo: {
     flex: 1,
   },
   dairyName: {
     fontSize: 15,
-    fontWeight: 'bold',
+    fontWeight: '700',
     color: colors.text.primary,
+    marginBottom: 2,
   },
   dairyLocationRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 2,
+    gap: 3,
   },
   dairyLocation: {
     fontSize: 12,
     color: colors.text.secondary,
-    marginRight: 4,
   },
+
+  // Bottom Bar
   bottomBar: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingTop: 12,
+    paddingBottom: 28,
     backgroundColor: colors.surface,
     borderTopWidth: 1,
-    borderTopColor: colors.border,
-    paddingBottom: 28,
+    borderTopColor: '#E2E8F0',
   },
-  quantitySection: {
+  qtySection: {
     flexDirection: 'row',
     alignItems: 'center',
+    backgroundColor: '#F1F5F9',
+    borderRadius: 14,
+    paddingHorizontal: 4,
+    paddingVertical: 4,
     marginRight: 12,
   },
-  qtyButton: {
+  qtyBtn: {
     width: 36,
     height: 36,
-    borderRadius: 18,
-    backgroundColor: colors.primaryLight,
+    borderRadius: 10,
+    backgroundColor: colors.surface,
     justifyContent: 'center',
     alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 2,
+    elevation: 1,
   },
-  qtyButtonDisabled: {
-    backgroundColor: '#F3F4F6',
+  qtyBtnDisabled: {
+    backgroundColor: 'transparent',
+    shadowOpacity: 0,
+    elevation: 0,
   },
-  quantityText: {
+  qtyText: {
     fontSize: 18,
-    fontWeight: 'bold',
+    fontWeight: '700',
     color: colors.text.primary,
-    marginHorizontal: 16,
-    minWidth: 30,
+    marginHorizontal: 14,
+    minWidth: 28,
     textAlign: 'center',
   },
-  orderButton: {
+  orderBtn: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: colors.primary,
-    paddingVertical: 14,
-    borderRadius: 12,
+    paddingVertical: 16,
+    borderRadius: 14,
     gap: 8,
+    shadowColor: '#2563EB',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 4,
   },
-  orderButtonDisabled: {
-    backgroundColor: '#9CA3AF',
+  orderBtnDisabled: {
+    backgroundColor: '#94A3B8',
+    shadowOpacity: 0,
+    elevation: 0,
   },
-  orderButtonText: {
+  orderBtnText: {
     color: '#FFFFFF',
     fontSize: 16,
-    fontWeight: 'bold',
+    fontWeight: '700',
   },
 });

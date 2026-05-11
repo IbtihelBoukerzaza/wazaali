@@ -4,9 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../utils/colors';
 import { wilayas } from '../data/wilayas';
 import { auth } from '../config/firebase';
-import { createUserWithEmailAndPassword } from 'firebase/auth';
-import { createUserDocument } from '../services/firestoreService';
-import { seedSafiliProducts } from '../scripts/seedSafiliProducts';
+import { createUserDocument, getUserByEmail } from '../services/firestoreService';
 
 // Custom LTR placeholder component
 const LTRInput = ({ placeholder, ...props }) => {
@@ -53,15 +51,16 @@ export default function SignupScreen({ navigation, route }) {
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [wilayaModalVisible, setWilayaModalVisible] = useState(false);
   const [wilayaSearch, setWilayaSearch] = useState('');
-
-  // Handle terms acceptance when returning from Terms screen
+  // Auto-check terms when returning from Terms screen (only if accepted)
   useEffect(() => {
-    if (route.params?.termsAccepted) {
-      setTermsAccepted(true);
-      // Clear the params to prevent re-checking
-      navigation.setParams({ termsAccepted: undefined });
-    }
-  }, [route.params?.termsAccepted, navigation]);
+    const unsubscribe = navigation.addListener('focus', () => {
+      if (global.__termsAcceptedFromTermsScreen) {
+        setTermsAccepted(true);
+        global.__termsAcceptedFromTermsScreen = false;
+      }
+    });
+    return unsubscribe;
+  }, [navigation]);
 
   const handleSignup = async () => {
     if (!name || !email || !password || !confirmPassword || !phone || !businessName || !wilaya) {
@@ -86,60 +85,73 @@ export default function SignupScreen({ navigation, route }) {
 
     setLoading(true);
     try {
-      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-      const user = userCredential.user;
+      // Check if email already exists in Firestore
+      const existingUser = await getUserByEmail(email);
+      if (existingUser) {
+        if (existingUser.status === 'rejected') {
+          // Delete the old rejected record so they can re-register
+          const { deleteRejectedUserDoc } = require('../services/firestoreService');
+          await deleteRejectedUserDoc(existingUser.id);
+        } else if (existingUser.status === 'pending') {
+          Alert.alert('خطأ', 'هذا البريد الإلكتروني مسجل بالفعل وقيد المراجعة. يرجى انتظار الموافقة.');
+          setLoading(false);
+          return;
+        } else {
+          Alert.alert('خطأ', 'البريد الإلكتروني مسجل بالفعل. يرجى تسجيل الدخول أو استخدام بريد آخر.');
+          setLoading(false);
+          return;
+        }
+      }
 
-      // Create user document in Firestore
+      // Create user document in Firestore ONLY (no Firebase Auth account yet)
+      // Auth account will be created when admin approves
       const role = userType === 'factory' ? 'dairy_owner' : 'shop_owner';
-      const result = await createUserDocument(user.uid, {
+      const result = await createUserDocument(null, {
         name,
         email,
         phone,
         businessName,
         wilaya,
         role,
+        password, // stored temporarily; deleted after approval
       });
 
       if (result.success) {
-        // Auto-seed Safili products if businessName matches
-        const bName = businessName.trim().toLowerCase();
-        if (role === 'dairy_owner' && (bName === 'safili' || bName === 'صفيلي' || bName.includes('safili') || bName.includes('صفيلي'))) {
-          try {
-            await seedSafiliProducts(user.uid);
-            console.log('✅ Safili products auto-seeded for user:', user.uid);
-          } catch (seedError) {
-            console.error('⚠️ Failed to seed Safili products:', seedError);
-          }
-        }
-
         Alert.alert(
-          'تم إنشاء الحساب',
-          'تم إنشاء حسابك بنجاح. حسابك قيد المراجعة من قبل المسؤول. سيتم إشعارك عند الموافقة.',
+          'تم إرسال الطلب',
+          'تم إرسال طلب التسجيل بنجاح. سيتم مراجعة حسابك من قبل المسؤول. سيتم إشعارك عند الموافقة.',
           [
             {
               text: 'حسناً',
               onPress: () => {
-                auth.signOut();
                 navigation.replace('Login');
               }
             }
           ]
         );
+
+        // Notify admins about new user inscription
+        if (role !== 'admin') {
+          const { createAdminInscriptionNotification } = require('../services/firestoreService');
+          try {
+            await createAdminInscriptionNotification({
+              name: name,
+              email: email,
+              role: role
+            });
+          } catch (error) {
+            console.error('Error notifying admins:', error);
+          }
+        }
       } else {
         throw new Error(result.error);
       }
     } catch (error) {
       console.error('Signup error:', error);
       let errorMessage = 'حدث خطأ أثناء إنشاء الحساب';
-      
-      if (error.code === 'auth/email-already-in-use') {
+      if (error.message?.includes('email')) {
         errorMessage = 'البريد الإلكتروني مسجل بالفعل';
-      } else if (error.code === 'auth/invalid-email') {
-        errorMessage = 'البريد الإلكتروني غير صالح';
-      } else if (error.code === 'auth/weak-password') {
-        errorMessage = 'كلمة المرور ضعيفة جداً';
       }
-      
       Alert.alert('خطأ', errorMessage);
     } finally {
       setLoading(false);
@@ -345,7 +357,7 @@ export default function SignupScreen({ navigation, route }) {
               أوافق على{' '}
               <Text
                 style={styles.termsLink}
-                onPress={() => navigation.navigate('Terms')}
+                onPress={() => navigation.push('Terms')}
               >
                 الشروط والأحكام
               </Text>

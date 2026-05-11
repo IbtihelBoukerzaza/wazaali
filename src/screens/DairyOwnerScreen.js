@@ -1,19 +1,26 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Modal, TextInput, ActivityIndicator, Image, Dimensions } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Modal, TextInput, ActivityIndicator, Image, Dimensions, KeyboardAvoidingView, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { colors } from '../utils/colors';
 import { useAuth } from '../context/AuthContext';
 import { getOrdersByDairy, updateOrderStatusWithNotification, subscribeToDairyOrders, subscribeToNotifications, getProductsByDairy, addProduct, updateProduct, deleteProduct, getUserByUid } from '../services/firestoreService';
-import { seedSafiliProducts } from '../scripts/seedSafiliProducts';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { storage } from '../config/firebase';
+import { auth, storage } from '../config/firebase';
+import NotificationDropdown from '../components/NotificationDropdown';
+import { useNavigation } from '@react-navigation/native';
+import {
+  updatePassword, reauthenticateWithCredential, EmailAuthProvider,
+  updateProfile,
+} from 'firebase/auth';
 
 const { width } = Dimensions.get('window');
 
 export default function DairyOwnerScreen() {
+  const insets = useSafeAreaInsets();
   const [activeTab, setActiveTab] = useState('home');
-  const [activeFilter, setActiveFilter] = useState('new');
+  const [activeFilter, setActiveFilter] = useState('all');
   const [orders, setOrders] = useState([]);
   const [products, setProducts] = useState([]);
   const [stats, setStats] = useState({
@@ -33,6 +40,7 @@ export default function DairyOwnerScreen() {
     price: '',
     stock: '',
     image: null,
+    type: '',
   });
   const [editProduct, setEditProduct] = useState({
     id: '',
@@ -41,13 +49,54 @@ export default function DairyOwnerScreen() {
     price: '',
     stock: '',
     image: null,
+    type: '',
   });
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [imageLoadingStates, setImageLoadingStates] = useState({});
   const [imageErrors, setImageErrors] = useState({});
   const { user } = useAuth();
   const [productCategoryFilter, setProductCategoryFilter] = useState('all');
+  const [showWarningOnly, setShowWarningOnly] = useState(false);
   const [notifications, setNotifications] = useState([]);
+  const [userData, setUserData] = useState(null);
+  const [showProductTypePicker, setShowProductTypePicker] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+
+  // Function to get Arabic display name for product type
+  const getTypeDisplayName = (typeId) => {
+    const typeMap = {
+      'حليب': 'حليب',
+      'ألبان': 'ألبان', 
+      'أجبان': 'أجبان',
+      'زبدة': 'زبدة',
+      'أخرى': 'أخرى'
+    };
+    return typeMap[typeId] || typeId;
+  };
+
+  const getStockStatus = (stock) => {
+    if (!stock || stock === 0) {
+      return { text: 'غير متوفر', color: colors.error, icon: 'close-circle' };
+    } else if (stock >= 1 && stock <= 20) {
+      return { text: `${stock} متبق`, color: colors.warning, icon: 'warning' };
+    } else {
+      return { text: 'متوفر', color: colors.success, icon: 'checkmark-circle' };
+    }
+  };
+
+  const [profilePic, setProfilePic] = useState(user?.photoURL || null);
+  const [showPersonalInfo, setShowPersonalInfo] = useState(false);
+  const [showSecurity, setShowSecurity] = useState(false);
+  const [showAbout, setShowAbout] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [editPhone, setEditPhone] = useState('');
+  const [editWilaya, setEditWilaya] = useState('');
+  const [editEmail, setEditEmail] = useState('');
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [changingPass, setChangingPass] = useState(false);
 
   useEffect(() => {
     if (!user) return;
@@ -59,10 +108,11 @@ export default function DairyOwnerScreen() {
     });
 
     const unsubscribeNotifs = subscribeToNotifications(user.uid, (notifs) => {
-      setNotifications(notifs.filter(n => !n.read));
+      setNotifications(notifs);
     });
 
     loadProducts();
+    loadUserData();
 
     return () => {
       unsubscribeOrders();
@@ -72,30 +122,108 @@ export default function DairyOwnerScreen() {
 
   const loadProducts = async () => {
     try {
-      const productsData = await getProductsByDairy(user.uid);
+      const productsData = await getProductsByDairy(user.uid, productCategoryFilter);
       setProducts(productsData);
 
-      // Auto-seed Safili products if user has no products and businessName matches
-      if (productsData.length === 0) {
-        const userData = await getUserByUid(user.uid);
-        if (userData) {
-          const bName = (userData.businessName || '').trim().toLowerCase();
-          if (bName === 'safili' || bName === 'صفيلي' || bName.includes('safili') || bName.includes('صفيلي')) {
-            try {
-              const result = await seedSafiliProducts(user.uid);
-              if (result.success) {
-                console.log('✅ Auto-seeded Safili products for existing user');
-                const newProducts = await getProductsByDairy(user.uid);
-                setProducts(newProducts);
-              }
-            } catch (seedError) {
-              console.error('⚠️ Auto-seed failed:', seedError);
-            }
-          }
-        }
-      }
+      // Auto-seed Safili products is disabled to prevent unwanted product creation
+      // Commented out to prevent auto-seeding after deletion
     } catch (error) {
       console.error('Error loading products:', error);
+    }
+  };
+
+  const loadUserData = async () => {
+    if (!user) return;
+    try {
+      const data = await getUserByUid(user.uid);
+      setUserData(data);
+      setProfilePic(user.photoURL || data?.photoURL || null);
+      setEditName(data?.businessName || data?.name || user?.displayName || '');
+      setEditPhone(data?.phone || '');
+      setEditWilaya(data?.wilaya || '');
+      setEditEmail(user?.email || '');
+    } catch (error) {
+      console.error('Error loading user data:', error);
+    }
+  };
+
+  const navigation = useNavigation();
+
+  const handleLogout = () => {
+    auth.signOut();
+    navigation.reset({
+      index: 0,
+      routes: [{ name: 'Login' }],
+    });
+  };
+
+  const pickProfileImage = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('تنبيه', 'نحتاج إذن الوصول إلى الصور لتغيير صورة الملف الشخصي');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: 'images',
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.7,
+    });
+    if (!result.canceled && result.assets?.[0]?.uri) {
+      const uri = result.assets[0].uri;
+      setProfilePic(uri);
+      try {
+        await updateProfile(auth.currentUser, { photoURL: uri });
+      } catch (e) {
+        console.log('Profile update (local only):', e.message);
+      }
+    }
+  };
+
+  const savePersonalInfo = async () => {
+    setSavingProfile(true);
+    try {
+      await updateProfile(auth.currentUser, { displayName: editName });
+      setUserData(prev => ({ ...prev, businessName: editName, phone: editPhone, wilaya: editWilaya, email: editEmail }));
+      Alert.alert('نجاح', 'تم حفظ المعلومات الشخصية');
+      setShowPersonalInfo(false);
+    } catch (error) {
+      Alert.alert('خطأ', 'فشل في حفظ المعلومات');
+    } finally {
+      setSavingProfile(false);
+    }
+  };
+
+  const changePassword = async () => {
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      Alert.alert('تنبيه', 'يرجى ملء جميع الحقول');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      Alert.alert('تنبيه', 'كلمتا المرور الجديدتان غير متطابقتين');
+      return;
+    }
+    if (newPassword.length < 6) {
+      Alert.alert('تنبيه', 'يجب أن تكون كلمة المرور 6 أحرف على الأقل');
+      return;
+    }
+    setChangingPass(true);
+    try {
+      const credential = EmailAuthProvider.credential(user.email, currentPassword);
+      await reauthenticateWithCredential(auth.currentUser, credential);
+      await updatePassword(auth.currentUser, newPassword);
+      Alert.alert('نجاح', 'تم تغيير كلمة المرور بنجاح');
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+      setShowSecurity(false);
+    } catch (error) {
+      let msg = 'فشل في تغيير كلمة المرور';
+      if (error.code === 'auth/wrong-password') msg = 'كلمة المرور الحالية غير صحيحة';
+      if (error.code === 'auth/weak-password') msg = 'كلمة المرور الجديدة ضعيفة جداً';
+      Alert.alert('خطأ', msg);
+    } finally {
+      setChangingPass(false);
     }
   };
 
@@ -121,11 +249,57 @@ export default function DairyOwnerScreen() {
 
   const handleAcceptOrder = async (orderId, order) => {
     try {
+      // Check if all products have sufficient stock
+      const stockValidation = order.items?.map(item => {
+        const product = products.find(p => p.id === item.productId);
+        const currentStock = product?.stock || 0;
+        const requiredStock = item.quantity || 0;
+        return {
+          productName: item.name,
+          currentStock,
+          requiredStock,
+          hasEnoughStock: currentStock >= requiredStock
+        };
+      }) || [];
+
+      const insufficientStock = stockValidation.filter(item => !item.hasEnoughStock);
+      
+      if (insufficientStock.length > 0) {
+        const stockDetails = insufficientStock.map(item => 
+          `${item.productName}: ${item.currentStock} صندوق متاح، ${item.requiredStock} صندوق مطلوب`
+        ).join('\n');
+        
+        Alert.alert(
+          'مخزون غير كافي',
+          `لا يمكن قبول هذا الطلب بسبب مخزون غير كافي:\n\n${stockDetails}`,
+          [{ text: 'حسناً', style: 'default' }]
+        );
+        return;
+      }
+
+      // Update order status
       const result = await updateOrderStatusWithNotification(
         orderId, 'accepted', order.shopId, order.shopName, user?.displayName || 'الملبنة'
       );
+
       if (result.success) {
-        Alert.alert('نجاح', 'تم قبول الطلب بنجاح');
+        // Reduce stock for each product in the order
+        const stockUpdatePromises = order.items?.map(async (item) => {
+          const product = products.find(p => p.id === item.productId);
+          if (product) {
+            const newStock = (product.stock || 0) - (item.quantity || 0);
+            return await updateProduct(item.productId, { stock: Math.max(0, newStock) });
+          }
+          return null;
+        }) || [];
+
+        await Promise.all(stockUpdatePromises);
+
+        // Refresh products data to show updated stock
+        const updatedProducts = await getProductsByDairy(user.uid);
+        setProducts(updatedProducts);
+
+        Alert.alert('نجاح', 'تم قبول الطلب وتحديث المخزون بنجاح');
       } else {
         Alert.alert('خطأ', result.error);
       }
@@ -197,7 +371,7 @@ export default function DairyOwnerScreen() {
       case 'pending': return 'قيد الانتظار';
       case 'accepted': return 'مقبول';
       case 'rejected': return 'مرفوض';
-      case 'completed': return 'مكتمل';
+      case 'completed': return 'تم التوصيل';
       case 'in_transit': return 'في الطريق';
       case 'unpaid': return 'غير مدفوع';
       default: return status;
@@ -251,9 +425,14 @@ export default function DairyOwnerScreen() {
     try {
       const response = await fetch(uri);
       const blob = await response.blob();
-      const filename = `products/${Date.now()}.jpg`;
+      const filename = `products/${user.uid}_${Date.now()}.jpg`;
       const storageRef = ref(storage, filename);
-      await uploadBytes(storageRef, blob);
+      
+      const metadata = {
+        contentType: 'image/jpeg',
+      };
+      
+      await uploadBytes(storageRef, blob, metadata);
       const downloadURL = await getDownloadURL(storageRef);
       return downloadURL;
     } catch (error) {
@@ -293,12 +472,13 @@ export default function DairyOwnerScreen() {
         price: parseFloat(newProduct.price),
         stock: parseInt(newProduct.stock),
         image: imageUrl,
+        type: newProduct.type,
         createdAt: new Date().toISOString()
       });
 
       if (result.success) {
         Alert.alert('نجاح', 'تم إضافة المنتج بنجاح');
-        setNewProduct({ name: '', description: '', price: '', stock: '', image: null });
+        setNewProduct({ name: '', description: '', price: '', stock: '', image: null, type: '' });
         setShowAddProductModal(false);
         loadProducts();
       } else {
@@ -310,6 +490,7 @@ export default function DairyOwnerScreen() {
     }
   };
 
+  
   const handleDeleteProduct = async (productId) => {
     Alert.alert(
       'تأكيد الحذف',
@@ -356,7 +537,7 @@ export default function DairyOwnerScreen() {
   const pickImage = async () => {
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: 'images',
         allowsEditing: true,
         aspect: [1, 1],
         quality: 0.7,
@@ -374,7 +555,7 @@ export default function DairyOwnerScreen() {
   const pickImageForEdit = async () => {
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: 'images',
         allowsEditing: true,
         aspect: [1, 1],
         quality: 0.7,
@@ -398,6 +579,7 @@ export default function DairyOwnerScreen() {
       price: product.price?.toString() || '',
       stock: product.stock?.toString() || '',
       image: product.image || null,
+      type: product.type || '',
     });
     setShowEditProductModal(true);
   };
@@ -420,6 +602,7 @@ export default function DairyOwnerScreen() {
         price: parseFloat(editProduct.price),
         stock: parseInt(editProduct.stock),
         image: imageUrl,
+        type: editProduct.type,
         updatedAt: new Date().toISOString()
       });
 
@@ -437,8 +620,7 @@ export default function DairyOwnerScreen() {
   };
 
   const renderHome = () => {
-    const todayOrders = orders.filter(o => isToday(o.createdAt || o.timestamp));
-    const displayOrders = todayOrders.length > 0 ? todayOrders : orders;
+    const todayOrders = orders.filter(o => isToday(o.createdAt || o.timestamp) && o.status !== 'completed' && o.status !== 'rejected');
     const lowStockProducts = products.filter(p => (p.stock || 0) <= 20);
     const pendingCount = orders.filter(o => o.status === 'pending').length;
 
@@ -473,7 +655,7 @@ export default function DairyOwnerScreen() {
             <View style={[styles.dashStatDot, { backgroundColor: colors.success }]} />
             <View>
               <Text style={styles.dashStatNum}>{stats.totalRevenue > 0 ? stats.totalRevenue.toLocaleString() : 0}</Text>
-              <Text style={styles.dashStatLbl}>دج إيرادات</Text>
+              <Text style={styles.dashStatLbl}>دج أرباح</Text>
             </View>
           </View>
           <View style={styles.dashStatDivider} />
@@ -507,11 +689,11 @@ export default function DairyOwnerScreen() {
           </View>
           <Text style={styles.dashQuickLabel}>إضافة منتج</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.dashQuickBtn} onPress={() => setActiveTab('products')}>
+        <TouchableOpacity style={styles.dashQuickBtn} onPress={() => setActiveTab('account')}>
           <View style={[styles.dashQuickIcon, { backgroundColor: '#FEF2F2' }]}>
-            <Ionicons name="bar-chart-outline" size={22} color={colors.error} />
+            <Ionicons name="settings-outline" size={22} color={colors.error} />
           </View>
-          <Text style={styles.dashQuickLabel}>المخزون</Text>
+          <Text style={styles.dashQuickLabel}>الحساب</Text>
         </TouchableOpacity>
       </ScrollView>
 
@@ -527,13 +709,13 @@ export default function DairyOwnerScreen() {
           </TouchableOpacity>
         </View>
 
-        {displayOrders.length === 0 ? (
+        {todayOrders.length === 0 ? (
           <View style={styles.dashEmptyState}>
             <Ionicons name="document-text-outline" size={40} color={colors.text.light} />
             <Text style={styles.dashEmptyText}>لا توجد طلبات حالياً</Text>
           </View>
         ) : (
-          displayOrders.slice(0, 4).map((order) => (
+          todayOrders.slice(0, 4).map((order) => (
             <TouchableOpacity 
               key={order.id} 
               style={styles.dashOrderCard}
@@ -568,12 +750,15 @@ export default function DairyOwnerScreen() {
               <Ionicons name="alert-circle" size={18} color={colors.error} />
               <Text style={styles.dashSectionTitle}>تنبيه المخزون</Text>
             </View>
-            <TouchableOpacity onPress={() => setActiveTab('products')}>
+            <TouchableOpacity onPress={() => {
+              setShowWarningOnly(true);
+              setActiveTab('products');
+            }}>
               <Text style={styles.dashSeeAll}>إدارة</Text>
             </TouchableOpacity>
           </View>
 
-          {lowStockProducts.slice(0, 5).map((product) => {
+          {lowStockProducts.slice(0, 4).map((product) => {
             const isCritical = (product.stock || 0) <= 5;
             return (
               <View key={product.id} style={styles.dashStockAlertCard}>
@@ -649,151 +834,230 @@ export default function DairyOwnerScreen() {
   const renderOrders = () => {
     // Calculate order counts for each status
     const orderCounts = {
-      delivered: orders.filter(o => o.status === 'completed').length,
-      rejected: orders.filter(o => o.status === 'rejected').length,
-      accepted: orders.filter(o => o.status === 'accepted').length,
       new: orders.filter(o => o.status === 'pending').length,
+      accepted: orders.filter(o => o.status === 'accepted').length,
+      rejected: orders.filter(o => o.status === 'rejected').length,
+      delivered: orders.filter(o => o.status === 'completed').length,
     };
 
-    const filterOptions = [
-      { id: 'new', label: 'طلبات جديدة', count: orderCounts.new },
-      { id: 'accepted', label: 'طلبات مقبولة', count: orderCounts.accepted },
-      { id: 'rejected', label: 'طلبات مرفوضة', count: orderCounts.rejected },
+    const statCards = [
+      { id: 'new', label: 'طلبات جديدة', count: orderCounts.new, color: '#2563EB', icon: 'document-text', bg: '#EFF6FF' },
+      { id: 'accepted', label: 'مقبولة', count: orderCounts.accepted, color: '#10B981', icon: 'checkmark-circle', bg: '#ECFDF5' },
+      { id: 'rejected', label: 'مرفوضة', count: orderCounts.rejected, color: '#F59E0B', icon: 'close-circle', bg: '#FFFBEB' },
+      { id: 'delivered', label: 'تم التوصيل', count: orderCounts.delivered, color: '#8B5CF6', icon: 'car', bg: '#F5F3FF' },
     ];
+
+    const filteredOrders = activeFilter === 'all'
+      ? orders
+      : orders.filter(order => {
+          if (activeFilter === 'new') return order.status === 'pending';
+          if (activeFilter === 'accepted') return order.status === 'accepted';
+          if (activeFilter === 'delivered') return order.status === 'completed';
+          if (activeFilter === 'rejected') return order.status === 'rejected';
+          return true;
+        });
+
+    const getStatusConfig = (status) => {
+      switch (status) {
+        case 'pending': return { label: 'جديد', color: '#2563EB', bg: '#EFF6FF', icon: 'ellipse' };
+        case 'accepted': return { label: 'مقبول', color: '#10B981', bg: '#ECFDF5', icon: 'checkmark-circle' };
+        case 'rejected': return { label: 'مرفوض', color: '#F59E0B', bg: '#FFFBEB', icon: 'close-circle' };
+        case 'completed': return { label: 'تم التوصيل', color: '#8B5CF6', bg: '#F5F3FF', icon: 'car' };
+        default: return { label: status, color: colors.text.secondary, bg: '#F3F4F6', icon: 'ellipse' };
+      }
+    };
+
+    const formatItemsSummary = (items) => {
+      if (!items || items.length === 0) return '';
+      return items.map(i => `${i.name} ×${i.quantity}`).join(' + ');
+    };
+
+    const formatDate = (timestamp) => {
+      if (!timestamp) return '';
+      const date = new Date(timestamp);
+      return date.toLocaleDateString('ar-DZ', { year: 'numeric', month: 'short', day: 'numeric' });
+    };
+
+    const formatTime = (timestamp) => {
+      if (!timestamp) return '';
+      const date = new Date(timestamp);
+      return date.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', hour12: true });
+    };
+
+    // Calculate today's orders
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayOrders = orders.filter(o => {
+      const orderDate = new Date(o.createdAt);
+      orderDate.setHours(0, 0, 0, 0);
+      return orderDate.getTime() === today.getTime();
+    }).length;
 
     return (
       <View style={styles.content}>
-        {/* Filter Section */}
-        <View style={styles.filterSectionNew}>
-          {filterOptions.map((filter) => (
-            <TouchableOpacity
-              key={filter.id}
-              style={styles.filterItem}
-              onPress={() => setActiveFilter(filter.id)}
-            >
-              <View style={[
-                styles.filterBadge,
-                activeFilter === filter.id && styles.activeFilterBadge
-              ]}>
-                <Text style={[
-                  styles.filterBadgeText,
-                  activeFilter === filter.id && styles.activeFilterBadgeText
-                ]}>
-                  {filter.count}
-                </Text>
+        {/* Dashboard Stats Header */}
+        <View style={styles.dashboardHeader}>
+          {/* Purple Gradient Card */}
+          <View style={styles.mainStatsCard}>
+            <View style={styles.mainStatsContent}>
+              <View style={styles.statItem}>
+                <View style={styles.statIconContainer}>
+                  <Ionicons name="bag" size={24} color={colors.primary} />
+                </View>
+                <View>
+                  <Text style={styles.statLabelWhite}>إجمالي الطلبات</Text>
+                  <Text style={styles.statValueWhite}>{orders.length}</Text>
+                  <Text style={styles.statSubtextWhite}>هذا الشهر</Text>
+                </View>
               </View>
-              <Text style={[
-                styles.filterItemLabel,
-                activeFilter === filter.id && styles.activeFilterItemLabel
-              ]}>
-                {filter.label}
-              </Text>
-              {activeFilter === filter.id && (
-                <View style={styles.filterIndicator} />
-              )}
+              <View style={styles.statDivider} />
+              <View style={styles.statItem}>
+                <View>
+                  <Text style={styles.statLabelWhite}>طلبات اليوم</Text>
+                  <Text style={styles.statValueWhiteSmall}>{todayOrders}</Text>
+                </View>
+              </View>
+            </View>
+            <View style={styles.chartIconContainer}>
+              <Ionicons name="trending-up" size={24} color="#FFFFFF" />
+            </View>
+          </View>
+
+          {/* Status Cards Grid */}
+          <View style={styles.statusGrid}>
+            <TouchableOpacity
+              style={[styles.statusCard, activeFilter === 'delivered' && styles.statusCardActive]}
+              onPress={() => setActiveFilter(activeFilter === 'delivered' ? 'all' : 'delivered')}
+            >
+              <View style={styles.statusCardTop}>
+                <Text style={styles.statusCardNumber}>{orderCounts.delivered}</Text>
+                <View style={[styles.statusCardIcon, { backgroundColor: '#F3E5F5' }]}>
+                  <Ionicons name="car" size={20} color={colors.primary} />
+                </View>
+              </View>
+              <Text style={[styles.statusCardLabel, { color: colors.primary }]}>تم التوصيل</Text>
             </TouchableOpacity>
-          ))}
+
+            <TouchableOpacity
+              style={[styles.statusCard, activeFilter === 'accepted' && styles.statusCardActiveAccepted]}
+              onPress={() => setActiveFilter(activeFilter === 'accepted' ? 'all' : 'accepted')}
+            >
+              <View style={styles.statusCardTop}>
+                <Text style={styles.statusCardNumber}>{orderCounts.accepted}</Text>
+                <View style={[styles.statusCardIcon, { backgroundColor: '#E8F5E9' }]}>
+                  <Ionicons name="checkmark-circle" size={20} color="#4CAF50" />
+                </View>
+              </View>
+              <Text style={[styles.statusCardLabel, { color: '#4CAF50' }]}>مقبولة</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.statusCard, activeFilter === 'new' && styles.statusCardActivePending]}
+              onPress={() => setActiveFilter(activeFilter === 'new' ? 'all' : 'new')}
+            >
+              <View style={styles.statusCardTop}>
+                <Text style={styles.statusCardNumber}>{orderCounts.new}</Text>
+                <View style={[styles.statusCardIcon, { backgroundColor: '#E3F2FD' }]}>
+                  <Ionicons name="document-text" size={20} color="#2196F3" />
+                </View>
+              </View>
+              <Text style={[styles.statusCardLabel, { color: '#2196F3' }]}>طلبات جديدة</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.statusCard, activeFilter === 'rejected' && styles.statusCardActiveRejected]}
+              onPress={() => setActiveFilter(activeFilter === 'rejected' ? 'all' : 'rejected')}
+            >
+              <View style={styles.statusCardTop}>
+                <Text style={styles.statusCardNumber}>{orderCounts.rejected}</Text>
+                <View style={[styles.statusCardIcon, { backgroundColor: '#FFF3E0' }]}>
+                  <Ionicons name="close-circle" size={20} color="#FF9800" />
+                </View>
+              </View>
+              <Text style={[styles.statusCardLabel, { color: '#FF9800' }]}>مرفوضة</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
-        {/* Orders List */}
+        {/* Recent Orders Section Header */}
+        <View style={styles.sectionHeader}>
+          <TouchableOpacity onPress={() => setActiveTab('orders')}>
+            <Text style={styles.viewAllLink}>عرض الكل</Text>
+          </TouchableOpacity>
+          <View style={styles.sectionTitleContainer}>
+            <Text style={styles.sectionTitle}>الطلبات الحديثة</Text>
+            <Ionicons name="list" size={18} color={colors.text.secondary} style={{ marginLeft: 6 }} />
+          </View>
+        </View>
+
+        {/* Orders List — vertical card layout */}
         <ScrollView showsVerticalScrollIndicator={false}>
-          {orders.length === 0 ? (
+          {filteredOrders.length === 0 ? (
             <View style={styles.emptyContainer}>
-              <Ionicons name="list-outline" size={64} color={colors.text.light} />
-              <Text style={styles.emptyText}>لا توجد طلبات حتى الآن</Text>
+              <Ionicons name="document-text-outline" size={56} color={colors.text.light} />
+              <Text style={styles.emptyText}>
+                {activeFilter === 'all' ? 'لا توجد طلبات حتى الآن' : 'لا توجد طلبات بهذه الحالة'}
+              </Text>
             </View>
           ) : (
-            orders
-              .filter(order => {
-                if (activeFilter === 'new') return order.status === 'pending';
-                if (activeFilter === 'accepted') return order.status === 'accepted';
-                if (activeFilter === 'rejected') return order.status === 'rejected';
-                return true;
-              })
-              .map((order) => (
-              <View key={order.id} style={styles.newOrderCard}>
-                {/* Order Header */}
-                <View style={styles.newOrderHeader}>
-                  <Text style={styles.newOrderId}>#{order.id.slice(-6)}</Text>
-                  <Text style={styles.newOrderId}>#{order.id.slice(-6)}</Text>
-                </View>
-
-                {/* Store Name */}
-                <Text style={styles.storeName}>{order.shopName || 'صاحب محل'}</Text>
-                {order.shopPhone && (
-                  <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
-                    <Ionicons name="call-outline" size={14} color={colors.text.secondary} />
-                    <Text style={{ fontSize: 12, color: colors.text.secondary, marginRight: 4 }}>{order.shopPhone}</Text>
+            filteredOrders.map((order) => {
+              const cfg = getStatusConfig(order.status);
+              return (
+                <TouchableOpacity
+                  key={order.id}
+                  style={styles.orderCard}
+                  onPress={() => setSelectedOrder(order)}
+                  activeOpacity={0.7}
+                >
+                  {/* Top row: Icon + Order# + Status + Chevron */}
+                  <View style={styles.orderCardTop}>
+                    <View style={styles.orderCardTopLeft}>
+                      <View style={[styles.orderCardIcon, { backgroundColor: cfg.bg }]}>
+                        <Ionicons name="water" size={18} color={cfg.color} />
+                      </View>
+                      <Text style={styles.orderCardNum}>#{order.id.slice(-6)}</Text>
+                    </View>
+                    <View style={styles.orderCardTopRight}>
+                      <View style={[styles.orderCardStatusBadge, { backgroundColor: cfg.bg }]}>
+                        <View style={[styles.orderCardStatusDot, { backgroundColor: cfg.color }]} />
+                        <Text style={[styles.orderCardStatusText, { color: cfg.color }]}>{cfg.label}</Text>
+                      </View>
+                      <Ionicons name="chevron-back" size={18} color={colors.text.light} />
+                    </View>
                   </View>
-                )}
-                {order.shopWilaya && (
-                  <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
-                    <Ionicons name="location-outline" size={14} color={colors.text.secondary} />
-                    <Text style={{ fontSize: 12, color: colors.text.secondary, marginRight: 4 }}>{order.shopWilaya}</Text>
+
+                  {/* Store name */}
+                  <Text style={styles.orderCardStore} numberOfLines={1}>
+                    {order.shopName || 'صاحب محل'}
+                  </Text>
+
+                  {/* Branch */}
+                  <View style={styles.orderCardBranchRow}>
+                    <Ionicons name="location-outline" size={12} color={colors.text.light} />
+                    <Text style={styles.orderCardBranch} numberOfLines={1}>
+                      {order.shopWilaya || 'الفرع الرئيسي'}
+                    </Text>
                   </View>
-                )}
 
-                {/* Order Details */}
-                <Text style={styles.orderDetails}>
-                  {order.items?.map((item, index) => 
-                    `${item.quantity} ${item.name}${index < order.items.length - 1 ? ' + ' : ''}`
-                  ).join('') || '25 لتر حليب + 10 زبادي'}
-                </Text>
+                  {/* Products summary */}
+                  <Text style={styles.orderCardItems} numberOfLines={1}>
+                    {formatItemsSummary(order.items)}
+                  </Text>
 
-                {/* Date and Time */}
-                <Text style={styles.orderDateTime}>
-                  {new Date(order.createdAt).toLocaleTimeString('ar-EG', { 
-                    hour: '2-digit', 
-                    minute: '2-digit' 
-                  })} {new Date(order.createdAt).toLocaleDateString('ar-EG', {
-                    day: '2-digit',
-                    month: '2-digit'
-                  })} - {new Date(order.createdAt).toLocaleTimeString('ar-EG', { 
-                    hour: '2-digit', 
-                    minute: '2-digit' 
-                  })}
-                </Text>
-
-                {/* Action Buttons */}
-                {order.status === 'pending' && (
-                  <View style={styles.newActionButtons}>
-                    <TouchableOpacity
-                      style={styles.rejectButtonOutline}
-                      onPress={() => handleRejectOrder(order.id, order)}
-                    >
-                      <Text style={styles.rejectButtonText}>رفض</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.acceptButtonSolid}
-                      onPress={() => handleAcceptOrder(order.id, order)}
-                    >
-                      <Text style={styles.acceptButtonText}>قبول</Text>
-                    </TouchableOpacity>
+                  {/* Bottom row: Date / Time */}
+                  <View style={styles.orderCardBottom}>
+                    <View style={styles.orderCardMeta}>
+                      <Ionicons name="calendar-outline" size={12} color={colors.text.light} />
+                      <Text style={styles.orderCardMetaText}>{formatDate(order.createdAt)}</Text>
+                    </View>
+                    <View style={styles.orderCardMeta}>
+                      <Ionicons name="time-outline" size={12} color={colors.text.light} />
+                      <Text style={styles.orderCardMetaText}>{formatTime(order.createdAt)}</Text>
+                    </View>
                   </View>
-                )}
-
-                {order.status === 'accepted' && (
-                  <TouchableOpacity
-                    style={styles.completeButtonSolid}
-                    onPress={() => handleCompleteOrder(order.id, order)}
-                  >
-                    <Text style={styles.completeButtonText}>إكمال التوصيل</Text>
-                  </TouchableOpacity>
-                )}
-
-                {order.status === 'completed' && (
-                  <View style={styles.deliveredBadge}>
-                    <Text style={styles.deliveredText}>تم التوصيل</Text>
-                  </View>
-                )}
-
-                {order.status === 'rejected' && (
-                  <View style={styles.rejectedBadge}>
-                    <Text style={styles.rejectedText}>مرفوضة</Text>
-                  </View>
-                )}
-              </View>
-            ))
+                </TouchableOpacity>
+              );
+            })
           )}
         </ScrollView>
       </View>
@@ -807,15 +1071,36 @@ export default function DairyOwnerScreen() {
       { key: 'ألبان', label: 'ألبان' },
       { key: 'أجبان', label: 'أجبان' },
       { key: 'زبدة', label: 'زبدة' },
-      { key: 'كريم', label: 'كريمات' },
+      { key: 'أخرى', label: 'أخرى' },
     ];
 
-    const filteredProducts = productCategoryFilter === 'all' 
-      ? products 
-      : products.filter(p => p.category === productCategoryFilter);
+    const filteredProducts = products.filter(product => {
+      const matchesCategory = productCategoryFilter === 'all' || product.type === productCategoryFilter;
+      const matchesSearch = searchQuery === '' || 
+        product.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        product.description.toLowerCase().includes(searchQuery.toLowerCase());
+      const matchesWarning = !showWarningOnly || (product.stock || 0) <= 20;
+      return matchesCategory && matchesSearch && matchesWarning;
+    });
 
     return (
     <View style={styles.content}>
+      {/* Warning Filter Indicator */}
+      {showWarningOnly && (
+        <View style={styles.warningFilterIndicator}>
+          <View style={styles.warningFilterContent}>
+            <Ionicons name="warning" size={16} color={colors.warning} />
+            <Text style={styles.warningFilterText}>عرض المنتجات ذات المخزون المنخفض فقط</Text>
+          </View>
+          <TouchableOpacity 
+            style={styles.clearWarningFilter} 
+            onPress={() => setShowWarningOnly(false)}
+          >
+            <Ionicons name="close" size={16} color={colors.text.secondary} />
+          </TouchableOpacity>
+        </View>
+      )}
+
       {/* Products Header */}
       <View style={styles.productsHeader}>
         <Text style={styles.productsTitle}>إدارة المنتجات</Text>
@@ -823,6 +1108,20 @@ export default function DairyOwnerScreen() {
           <Ionicons name="add" size={20} color="#FFFFFF" />
           <Text style={styles.addProductTextNew}>إضافة منتج</Text>
         </TouchableOpacity>
+      </View>
+
+      {/* Search Bar */}
+      <View style={styles.searchBarContainer}>
+        <View style={styles.searchInputWrapper}>
+          <TextInput
+            style={styles.searchInput}
+            placeholder="بحث عن منتج..."
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            placeholderTextColor={colors.text.secondary}
+          />
+          <Ionicons name="search" size={20} color={colors.text.secondary} style={styles.searchIcon} />
+        </View>
       </View>
 
       {/* Category Filter Bar */}
@@ -884,7 +1183,7 @@ export default function DairyOwnerScreen() {
                   </View>
                 )}
                 <View style={styles.modernProductCategoryBadge}>
-                  <Text style={styles.modernProductCategoryText}>{product.category || 'منتج'}</Text>
+                  <Text style={styles.modernProductCategoryText}>{getTypeDisplayName(product.type) || 'منتج'}</Text>
                 </View>
               </View>
 
@@ -894,7 +1193,16 @@ export default function DairyOwnerScreen() {
                 <View style={styles.modernProductMeta}>
                   <View style={styles.modernProductPriceRow}>
                     <Text style={styles.modernProductPrice}>{product.price} دج</Text>
-                    <Text style={styles.modernProductStock}>{product.stock || 0} صندوق</Text>
+                    <View style={styles.modernProductStockRow}>
+                      <Ionicons 
+                        name={getStockStatus(product.stock).icon} 
+                        size={14} 
+                        color={getStockStatus(product.stock).color} 
+                      />
+                      <Text style={[styles.modernProductStock, { color: getStockStatus(product.stock).color }]}>
+                        {getStockStatus(product.stock).text}
+                      </Text>
+                    </View>
                   </View>
                 </View>
               </View>
@@ -979,87 +1287,70 @@ export default function DairyOwnerScreen() {
 
   const renderAccount = () => (
     <View style={styles.content}>
-      {/* Profile Header */}
-      <View style={styles.accountHeader}>
-        <View style={styles.profileContainer}>
-          <View style={styles.profileAvatar}>
-            <Ionicons name="person" size={40} color="#FFFFFF" />
-          </View>
-          <View style={styles.profileInfo}>
-            <Text style={styles.profileName}>صاحب الملبنة</Text>
-            <Text style={styles.profileEmail}>{user?.email || 'dairy@example.com'}</Text>
-          </View>
+      {/* Profile Card */}
+      <View style={styles.profileCard}>
+        <View style={styles.avatarWrap}>
+          {profilePic ? (
+            <Image source={{ uri: profilePic }} style={styles.avatarImage} />
+          ) : (
+            <View style={styles.avatarPlaceholder}>
+              <Ionicons name="person" size={40} color="#FFFFFF" />
+            </View>
+          )}
+          <TouchableOpacity style={styles.cameraBtn} onPress={pickProfileImage}>
+            <Ionicons name="camera" size={14} color="#FFFFFF" />
+          </TouchableOpacity>
         </View>
-        <TouchableOpacity style={styles.editProfileButton}>
-          <Ionicons name="create" size={20} color={colors.primary} />
+
+        <Text style={styles.profileName}>
+          {userData?.businessName || userData?.name || user?.displayName || 'مستخدم'}
+        </Text>
+        <Text style={styles.profileRole}>صاحب ملبنة</Text>
+        <Text style={styles.profileEmail} numberOfLines={1}>{user?.email || ''}</Text>
+        {userData?.phone && <Text style={styles.profilePhone}>{userData.phone}</Text>}
+      </View>
+
+      {/* Menu Items */}
+      <View style={styles.menuWrap}>
+        <TouchableOpacity style={styles.menuItem} onPress={() => setShowPersonalInfo(true)}>
+          <View style={styles.menuIconWrap}>
+            <Ionicons name="person-outline" size={20} color={colors.primary} />
+          </View>
+          <View style={styles.menuTextWrap}>
+            <Text style={styles.menuTitle}>المعلومات الشخصية</Text>
+            <Text style={styles.menuSubtitle}>إدارة تفاصيلك الشخصية</Text>
+          </View>
+          <Ionicons name="chevron-back" size={18} color={colors.text.light} />
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.menuItem} onPress={() => setShowSecurity(true)}>
+          <View style={[styles.menuIconWrap, { backgroundColor: '#FFF7ED' }]}>
+            <Ionicons name="shield-checkmark-outline" size={20} color="#F59E0B" />
+          </View>
+          <View style={styles.menuTextWrap}>
+            <Text style={styles.menuTitle}>الأمان</Text>
+            <Text style={styles.menuSubtitle}>تغيير كلمة المرور والأمان</Text>
+          </View>
+          <Ionicons name="chevron-back" size={18} color={colors.text.light} />
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.menuItem} onPress={() => setShowAbout(true)}>
+          <View style={[styles.menuIconWrap, { backgroundColor: '#EFF6FF' }]}>
+            <Ionicons name="information-circle-outline" size={20} color="#2563EB" />
+          </View>
+          <View style={styles.menuTextWrap}>
+            <Text style={styles.menuTitle}>عن التطبيق</Text>
+            <Text style={styles.menuSubtitle}>إصدار التطبيق 1.0.0</Text>
+          </View>
+          <Ionicons name="chevron-back" size={18} color={colors.text.light} />
         </TouchableOpacity>
       </View>
 
-      {/* Account Options */}
-      <ScrollView showsVerticalScrollIndicator={false}>
-        <View style={styles.accountOptions}>
-          {/* Personal Info */}
-          <TouchableOpacity style={styles.accountOption}>
-            <View style={styles.optionLeft}>
-              <View style={[styles.optionIcon, { backgroundColor: colors.primaryLight }]}>
-                <Ionicons name="person-outline" size={20} color={colors.primary} />
-              </View>
-              <Text style={styles.optionText}>المعلومات الشخصية</Text>
-            </View>
-            <Ionicons name="chevron-back" size={20} color={colors.text.secondary} />
-          </TouchableOpacity>
-
-          {/* Notifications */}
-          <TouchableOpacity style={styles.accountOption}>
-            <View style={styles.optionLeft}>
-              <View style={[styles.optionIcon, { backgroundColor: colors.warningLight }]}>
-                <Ionicons name="notifications-outline" size={20} color={colors.warning} />
-              </View>
-              <Text style={styles.optionText}>الإشعارات</Text>
-            </View>
-            <Ionicons name="chevron-back" size={20} color={colors.text.secondary} />
-          </TouchableOpacity>
-
-          {/* Security */}
-          <TouchableOpacity style={styles.accountOption}>
-            <View style={styles.optionLeft}>
-              <View style={[styles.optionIcon, { backgroundColor: colors.successLight }]}>
-                <Ionicons name="shield-outline" size={20} color={colors.success} />
-              </View>
-              <Text style={styles.optionText}>الأمان والخصوصية</Text>
-            </View>
-            <Ionicons name="chevron-back" size={20} color={colors.text.secondary} />
-          </TouchableOpacity>
-
-          {/* Help */}
-          <TouchableOpacity style={styles.accountOption}>
-            <View style={styles.optionLeft}>
-              <View style={[styles.optionIcon, { backgroundColor: colors.errorLight }]}>
-                <Ionicons name="help-outline" size={20} color={colors.error} />
-              </View>
-              <Text style={styles.optionText}>المساعدة والدعم</Text>
-            </View>
-            <Ionicons name="chevron-back" size={20} color={colors.text.secondary} />
-          </TouchableOpacity>
-
-          {/* Settings */}
-          <TouchableOpacity style={styles.accountOption}>
-            <View style={styles.optionLeft}>
-              <View style={[styles.optionIcon, { backgroundColor: colors.text.light }]}>
-                <Ionicons name="settings-outline" size={20} color={colors.text.secondary} />
-              </View>
-              <Text style={styles.optionText}>الإعدادات</Text>
-            </View>
-            <Ionicons name="chevron-back" size={20} color={colors.text.secondary} />
-          </TouchableOpacity>
-
-          {/* Logout */}
-          <TouchableOpacity style={styles.logoutButton}>
-            <Ionicons name="log-out" size={20} color={colors.error} />
-            <Text style={styles.logoutText}>تسجيل الخروج</Text>
-          </TouchableOpacity>
-        </View>
-      </ScrollView>
+      {/* Logout */}
+      <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
+        <Ionicons name="log-out-outline" size={20} color={colors.error} />
+        <Text style={styles.logoutBtnText}>تسجيل الخروج</Text>
+      </TouchableOpacity>
     </View>
   );
 
@@ -1087,32 +1378,25 @@ export default function DairyOwnerScreen() {
     <View style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
-        <View style={styles.headerContent}>
-          <TouchableOpacity style={styles.headerMenuButton}>
-            <Ionicons name="menu" size={24} color={colors.text.primary} />
-          </TouchableOpacity>
-          
-          <Text style={styles.headerTitle}>
-            {activeTab === 'home' && 'الرئيسية'}
-            {activeTab === 'orders' && 'الطلبات'}
-            {activeTab === 'products' && 'المنتجات'}
-            {activeTab === 'features' && 'لماذا وزعلي؟'}
-            {activeTab === 'account' && 'حسابي'}
-          </Text>
-          
-          <TouchableOpacity style={styles.headerNotificationButton} onPress={() => setActiveTab('orders')}>
-            <Ionicons name="notifications-outline" size={24} color="#FFFFFF" />
-            {notifications.length > 0 && (
-              <View style={styles.headerNotifBadge}>
-                <Text style={styles.headerNotifBadgeText}>{notifications.length}</Text>
-              </View>
-            )}
-          </TouchableOpacity>
-        </View>
+        <NotificationDropdown
+          notifications={notifications}
+          userId={user?.uid}
+          onNotificationPress={() => setActiveTab('orders')}
+          onViewAllPress={() => navigation.navigate('Notifications')}
+        />
+        
+        <Text style={styles.headerTitle}>
+          {activeTab === 'home' && 'الرئيسية'}
+          {activeTab === 'orders' && 'الطلبات'}
+          {activeTab === 'products' && 'المنتجات'}
+          {activeTab === 'features' && 'لماذا وزعلي؟'}
+          {activeTab === 'account' && 'حسابي'}
+        </Text>
+        
+        <TouchableOpacity style={styles.menuButton}>
+          <Ionicons name="menu" size={24} color={colors.text.primary} />
+        </TouchableOpacity>
       </View>
-
-      {/* White Line Separator */}
-      <View style={styles.headerSeparator} />
 
       {/* Content */}
       <View style={styles.contentWrapper}>
@@ -1120,7 +1404,7 @@ export default function DairyOwnerScreen() {
       </View>
 
       {/* Bottom Navigation */}
-      <View style={styles.bottomNavContainer}>
+      <View style={[styles.bottomNavContainer, { paddingBottom: insets.bottom }]}>
         {[
           { id: 'home', name: 'الرئيسية', icon: 'home' },
           { id: 'orders', name: 'الطلبات', icon: 'list' },
@@ -1196,6 +1480,65 @@ export default function DairyOwnerScreen() {
                     {calculateTotal(selectedOrder.items)} دج
                   </Text>
                 </View>
+
+                {/* Order Action Buttons */}
+                {selectedOrder.status === 'pending' && (
+                  <View style={styles.modalActions}>
+                    <TouchableOpacity 
+                      style={[styles.actionButton, styles.acceptButton]} 
+                      onPress={() => {
+                        handleAcceptOrder(selectedOrder.id, selectedOrder);
+                        setSelectedOrder(null);
+                      }}
+                    >
+                      <Ionicons name="checkmark" size={20} color="#FFFFFF" />
+                      <Text style={styles.actionButtonText}>قبول الطلب</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity 
+                      style={[styles.actionButton, styles.rejectButton]} 
+                      onPress={() => {
+                        handleRejectOrder(selectedOrder.id, selectedOrder);
+                        setSelectedOrder(null);
+                      }}
+                    >
+                      <Ionicons name="close" size={20} color="#FFFFFF" />
+                      <Text style={styles.actionButtonText}>رفض الطلب</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+
+                {selectedOrder.status === 'accepted' && (
+                  <View style={styles.modalActions}>
+                    <TouchableOpacity 
+                      style={[styles.actionButton, styles.completeButton]} 
+                      onPress={() => {
+                        handleCompleteOrder(selectedOrder.id, selectedOrder);
+                        setSelectedOrder(null);
+                      }}
+                    >
+                      <Ionicons name="checkmark-done" size={20} color="#FFFFFF" />
+                      <Text style={styles.actionButtonText}>تم التوصيل</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+
+                {selectedOrder.status === 'completed' && (
+                  <View style={styles.modalActions}>
+                    <View style={[styles.actionButton, styles.completedButton]}>
+                      <Ionicons name="checkmark-done-circle" size={20} color="#FFFFFF" />
+                      <Text style={styles.actionButtonText}>تم التوصيل</Text>
+                    </View>
+                  </View>
+                )}
+
+                {selectedOrder.status === 'rejected' && (
+                  <View style={styles.modalActions}>
+                    <View style={[styles.actionButton, styles.rejectedButton]}>
+                      <Ionicons name="close-circle" size={20} color="#FFFFFF" />
+                      <Text style={styles.actionButtonText}>تم الرفض</Text>
+                    </View>
+                  </View>
+                )}
               </ScrollView>
             )}
           </View>
@@ -1249,6 +1592,21 @@ export default function DairyOwnerScreen() {
               </View>
 
               <View style={styles.inputContainer}>
+                <Text style={styles.inputLabel}>نوع المنتج</Text>
+                <View style={styles.pickerContainer}>
+                  <TouchableOpacity 
+                    style={styles.pickerButton}
+                    onPress={() => setShowProductTypePicker(true)}
+                  >
+                    <Text style={styles.pickerText}>
+                      {newProduct.type ? getTypeDisplayName(newProduct.type) : 'اختر نوع المنتج'}
+                    </Text>
+                    <Ionicons name="chevron-down" size={16} color={colors.text.secondary} />
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              <View style={styles.inputContainer}>
                 <Text style={styles.inputLabel}>الوصف</Text>
                 <TextInput
                   style={[styles.modernTextInput, styles.textArea]}
@@ -1298,6 +1656,61 @@ export default function DairyOwnerScreen() {
                 <Text style={styles.saveButtonText}>إضافة المنتج</Text>
               </TouchableOpacity>
             </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Product Type Picker Modal */}
+      <Modal
+        visible={showProductTypePicker}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowProductTypePicker(false)}
+      >
+        <View style={styles.modalContainer}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>اختر نوع المنتج</Text>
+              <TouchableOpacity onPress={() => setShowProductTypePicker(false)}>
+                <Ionicons name="close" size={24} color={colors.text.primary} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={styles.modalBody}>
+              {[
+                { id: 'حليب', name: 'حليب' },
+                { id: 'ألبان', name: 'ألبان' },
+                { id: 'أجبان', name: 'أجبان' },
+                { id: 'زبدة', name: 'زبدة' },
+                { id: 'أخرى', name: 'أخرى' },
+              ].map((type) => (
+                <TouchableOpacity
+                  key={type.id}
+                  style={[
+                    styles.typeOption,
+                    ((showEditProductModal ? editProduct.type : newProduct.type) === type.id) && styles.typeOptionSelected
+                  ]}
+                  onPress={() => {
+                    if (showEditProductModal) {
+                      setEditProduct({ ...editProduct, type: type.id });
+                    } else {
+                      setNewProduct({ ...newProduct, type: type.id });
+                    }
+                    setShowProductTypePicker(false);
+                  }}
+                >
+                  <Text style={[
+                    styles.typeOptionText,
+                    ((showEditProductModal ? editProduct.type : newProduct.type) === type.id) && styles.typeOptionTextSelected
+                  ]}>
+                    {type.name}
+                  </Text>
+                  {((showEditProductModal ? editProduct.type : newProduct.type) === type.id) && (
+                    <Ionicons name="checkmark" size={16} color={colors.primary} />
+                  )}
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
           </View>
         </View>
       </Modal>
@@ -1390,6 +1803,14 @@ export default function DairyOwnerScreen() {
                       <Text style={styles.detailDescText}>{selectedProduct.description}</Text>
                     </View>
                   ) : null}
+
+                  {/* Product Type */}
+                  {selectedProduct.type ? (
+                    <View style={styles.detailDescCard}>
+                      <Text style={styles.detailDescTitle}>نوع المنتج</Text>
+                      <Text style={styles.detailDescText}>{getTypeDisplayName(selectedProduct.type)}</Text>
+                    </View>
+                  ) : null}
                 </ScrollView>
 
                 {/* Bottom Action Buttons */}
@@ -1462,6 +1883,21 @@ export default function DairyOwnerScreen() {
               </View>
 
               <View style={styles.inputContainer}>
+                <Text style={styles.inputLabel}>نوع المنتج</Text>
+                <View style={styles.pickerContainer}>
+                  <TouchableOpacity 
+                    style={styles.pickerButton}
+                    onPress={() => setShowProductTypePicker(true)}
+                  >
+                    <Text style={styles.pickerText}>
+                      {editProduct.type ? getTypeDisplayName(editProduct.type) : 'اختر نوع المنتج'}
+                    </Text>
+                    <Ionicons name="chevron-down" size={16} color={colors.text.secondary} />
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              <View style={styles.inputContainer}>
                 <Text style={styles.inputLabel}>الوصف</Text>
                 <TextInput
                   style={[styles.modernTextInput, styles.textArea]}
@@ -1514,6 +1950,156 @@ export default function DairyOwnerScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* ========== Personal Info Modal ========== */}
+      <Modal visible={showPersonalInfo} animationType="slide" transparent>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>المعلومات الشخصية</Text>
+              <TouchableOpacity onPress={() => setShowPersonalInfo(false)}>
+                <Ionicons name="close" size={24} color={colors.text.primary} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView showsVerticalScrollIndicator={false}>
+              <Text style={styles.inputLabel}>الاسم الكامل</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={editName}
+                onChangeText={setEditName}
+                placeholder="الاسم الكامل"
+                placeholderTextColor={colors.text.light}
+              />
+
+              <Text style={styles.inputLabel}>رقم الهاتف</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={editPhone}
+                onChangeText={setEditPhone}
+                placeholder="رقم الهاتف"
+                placeholderTextColor={colors.text.light}
+                keyboardType="phone-pad"
+              />
+
+              <Text style={styles.inputLabel}>البريد الإلكتروني</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={editEmail}
+                onChangeText={setEditEmail}
+                placeholder="البريد الإلكتروني"
+                placeholderTextColor={colors.text.light}
+                keyboardType="email-address"
+                autoCapitalize="none"
+              />
+
+              <Text style={styles.inputLabel}>الولاية / العنوان</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={editWilaya}
+                onChangeText={setEditWilaya}
+                placeholder="الولاية أو العنوان"
+                placeholderTextColor={colors.text.light}
+              />
+
+              <TouchableOpacity
+                style={styles.saveBtn}
+                onPress={savePersonalInfo}
+                disabled={savingProfile}
+              >
+                {savingProfile ? (
+                  <ActivityIndicator color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.saveBtnText}>حفظ التغييرات</Text>
+                )}
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* ========== Security Modal ========== */}
+      <Modal visible={showSecurity} animationType="slide" transparent>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>الأمان</Text>
+              <TouchableOpacity onPress={() => setShowSecurity(false)}>
+                <Ionicons name="close" size={24} color={colors.text.primary} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView showsVerticalScrollIndicator={false}>
+              <Text style={styles.inputLabel}>كلمة المرور الحالية</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={currentPassword}
+                onChangeText={setCurrentPassword}
+                placeholder="أدخل كلمة المرور الحالية"
+                placeholderTextColor={colors.text.light}
+                secureTextEntry
+              />
+
+              <Text style={styles.inputLabel}>كلمة المرور الجديدة</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={newPassword}
+                onChangeText={setNewPassword}
+                placeholder="أدخل كلمة المرور الجديدة"
+                placeholderTextColor={colors.text.light}
+                secureTextEntry
+              />
+
+              <Text style={styles.inputLabel}>تأكيد كلمة المرور الجديدة</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={confirmPassword}
+                onChangeText={setConfirmPassword}
+                placeholder="أعد إدخال كلمة المرور الجديدة"
+                placeholderTextColor={colors.text.light}
+                secureTextEntry
+              />
+
+              <TouchableOpacity
+                style={styles.saveBtn}
+                onPress={changePassword}
+                disabled={changingPass}
+              >
+                {changingPass ? (
+                  <ActivityIndicator color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.saveBtnText}>تغيير كلمة المرور</Text>
+                )}
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* ========== About App Modal ========== */}
+      <Modal visible={showAbout} animationType="slide" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>عن التطبيق</Text>
+              <TouchableOpacity onPress={() => setShowAbout(false)}>
+                <Ionicons name="close" size={24} color={colors.text.primary} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.aboutBody}>
+              <View style={styles.aboutIconWrap}>
+                <Ionicons name="cube" size={48} color={colors.primary} />
+              </View>
+              <Text style={styles.aboutAppName}>وَزْعَلِي</Text>
+              <Text style={styles.aboutVersion}>الإصدار 1.0.0</Text>
+              <Text style={styles.aboutDesc}>
+                تطبيق وَزْعَلِي يربط بين أصحاب الملبنات وأصحاب المحلات لتسهيل طلب وتوصيل منتجات الألبان بكل سهولة وفعالية.
+              </Text>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -1524,54 +2110,28 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
   },
   header: {
-    backgroundColor: colors.background, // Same as app background
-    paddingHorizontal: 20,
-    paddingTop: 20, // Further reduced from 30 to 20
-    paddingBottom: 15, // Slightly reduced from 20 to 15
-  },
-  headerContent: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingTop: 25,
+    paddingBottom: 8,
+    backgroundColor: colors.background,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
   },
-  headerMenuButton: {
-    padding: 8,
-    backgroundColor: '#E0E0E0', // Gray background
-    borderRadius: 20,
-  },
-  headerNotificationButton: {
-    padding: 8,
-    backgroundColor: '#64B5F6',
-    borderRadius: 20,
-    position: 'relative',
-  },
-  headerNotifBadge: {
-    position: 'absolute',
-    top: -4,
-    right: -4,
-    backgroundColor: colors.error,
-    minWidth: 18,
-    height: 18,
-    borderRadius: 9,
+  menuButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#F0F0F0',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  headerNotifBadgeText: {
-    color: '#FFFFFF',
-    fontSize: 10,
-    fontWeight: 'bold',
-  },
   headerTitle: {
-    fontSize: 18,
-    fontWeight: '600',
+    fontSize: 20,
+    fontWeight: 'bold',
     color: colors.text.primary,
-    flex: 1,
-    textAlign: 'center',
-  },
-  headerSeparator: {
-    height: 1,
-    backgroundColor: '#E0E0E0', // Gray line separator
-    width: '100%',
   },
   tabsContainer: {
     flexDirection: 'row',
@@ -2427,12 +2987,197 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#FFFFFF',
   },
+  // === Mobile-Friendly Stat Cards & Order Card Styles ===
+  statCardsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 8,
+  },
+  statCard: {
+    width: '48%',
+    backgroundColor: colors.surface,
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  statCardTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  statIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  statLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    marginBottom: 6,
+  },
+  statCount: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: colors.text.primary,
+  },
+  statViewAllRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    marginTop: 4,
+  },
+  statViewAllText: {
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  recentOrdersHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    marginTop: 4,
+  },
+  recentOrdersTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: colors.text.primary,
+  },
+  filterDropdownBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  filterDropdownText: {
+    fontSize: 13,
+    color: colors.text.secondary,
+    fontWeight: '500',
+  },
+  // Order Card — vertical layout for mobile
+  orderCard: {
+    backgroundColor: colors.surface,
+    borderRadius: 16,
+    padding: 16,
+    marginHorizontal: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.04,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  orderCardTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  orderCardTopLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+    minWidth: 0,
+  },
+  orderCardIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  orderCardNum: {
+    fontSize: 15,
+    fontWeight: 'bold',
+    color: colors.text.primary,
+  },
+  orderCardTopRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  orderCardStatusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 12,
+  },
+  orderCardStatusDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+  },
+  orderCardStatusText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  orderCardStore: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: colors.text.primary,
+    marginBottom: 4,
+  },
+  orderCardBranchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginBottom: 12,
+  },
+  orderCardBranch: {
+    fontSize: 12,
+    color: colors.text.light,
+  },
+  orderCardBottom: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  orderCardMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  orderCardMetaText: {
+    fontSize: 11,
+    color: colors.text.light,
+  },
+  orderCardItems: {
+    fontSize: 13,
+    color: colors.text.secondary,
+    marginBottom: 10,
+  },
   // New Product Card Styles
   productsHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 20,
+    marginBottom: 16,
   },
   productsTitle: {
     fontSize: 20,
@@ -2452,6 +3197,38 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '600',
+  },
+  warningFilterIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: colors.warningLight,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    marginBottom: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.warning,
+  },
+  warningFilterContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  warningFilterText: {
+    fontSize: 13,
+    color: colors.warning,
+    fontWeight: '600',
+  },
+  clearWarningFilter: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: colors.surface,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   // Category Filter Styles
   categoryFilterWrap: {
@@ -3050,6 +3827,11 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: colors.text.light,
   },
+  modernProductStockRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
 
   // Modern Product Detail Modal
   detailModalContent: {
@@ -3288,90 +4070,443 @@ const styles = StyleSheet.create({
   },
 
   // Account Screen Styles
-  accountHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+  profileCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 24,
     alignItems: 'center',
-    marginBottom: 30,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: colors.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 10,
+    elevation: 3,
   },
-  profileContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  avatarWrap: {
+    position: 'relative',
+    marginBottom: 14,
   },
-  profileAvatar: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: colors.primary,
+  avatarImage: {
+    width: 90,
+    height: 90,
+    borderRadius: 45,
+    backgroundColor: '#E5E7EB',
+  },
+  avatarPlaceholder: {
+    width: 90,
+    height: 90,
+    borderRadius: 45,
+    backgroundColor: '#2563EB',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 16,
   },
-  profileInfo: {
+  cameraBtn: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: '#2563EB',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+  },
+  profileRole: {
+    fontSize: 13,
+    color: colors.text.secondary,
+    marginBottom: 4,
+  },
+  profilePhone: {
+    fontSize: 12,
+    color: colors.text.light,
+  },
+  menuWrap: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: colors.border,
+    marginBottom: 16,
+    overflow: 'hidden',
+  },
+  menuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  menuIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: '#F3F4F6',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 12,
+  },
+  menuTextWrap: {
     flex: 1,
   },
-  profileName: {
-    fontSize: 20,
+  menuTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: colors.text.primary,
+    marginBottom: 2,
+  },
+  menuSubtitle: {
+    fontSize: 12,
+    color: colors.text.light,
+  },
+  logoutBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FEF2F2',
+    padding: 14,
+    borderRadius: 12,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+  },
+  logoutBtnText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: colors.error,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 20,
+    paddingBottom: 40,
+    maxHeight: '85%',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 20,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: colors.text.primary,
+  },
+  inputLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.text.secondary,
+    marginBottom: 6,
+    marginTop: 12,
+  },
+  modalInput: {
+    backgroundColor: '#F9FAFB',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 15,
+    color: colors.text.primary,
+    borderWidth: 1,
+    borderColor: colors.border,
+    textAlign: 'right',
+  },
+  saveBtn: {
+    backgroundColor: '#2563EB',
+    padding: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginTop: 24,
+  },
+  saveBtnText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: 'bold',
+  },
+  aboutBody: {
+    alignItems: 'center',
+    paddingVertical: 30,
+  },
+  aboutIconWrap: {
+    width: 80,
+    height: 80,
+    borderRadius: 20,
+    backgroundColor: '#EFF6FF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  aboutAppName: {
+    fontSize: 22,
     fontWeight: 'bold',
     color: colors.text.primary,
     marginBottom: 4,
   },
-  profileEmail: {
+  aboutVersion: {
+    fontSize: 13,
+    color: colors.text.light,
+    marginBottom: 16,
+  },
+  aboutDesc: {
     fontSize: 14,
     color: colors.text.secondary,
+    textAlign: 'center',
+    lineHeight: 22,
+    paddingHorizontal: 10,
   },
-  editProfileButton: {
-    padding: 8,
-    borderRadius: 20,
-    backgroundColor: colors.primaryLight,
+
+  // Dashboard Styles
+  dashboardHeader: {
+    marginBottom: 16,
   },
-  accountOptions: {
-    gap: 16,
-  },
-  accountOption: {
+  mainStatsCard: {
+    backgroundColor: colors.primary,
+    borderRadius: 16,
+    padding: 20,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: colors.surface,
-    padding: 20,
-    borderRadius: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    marginBottom: 16,
   },
-  optionLeft: {
+  mainStatsContent: {
     flexDirection: 'row',
     alignItems: 'center',
     flex: 1,
   },
-  optionIcon: {
+  statItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  statIconContainer: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 12,
+  },
+  statLabelWhite: {
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.85)',
+    marginBottom: 4,
+  },
+  statValueWhite: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+  },
+  statValueWhiteSmall: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+  },
+  statSubtextWhite: {
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.6)',
+    marginTop: 2,
+  },
+  statDivider: {
+    width: 1,
+    height: 50,
+    backgroundColor: 'rgba(255,255,255,0.3)',
+    marginHorizontal: 20,
+  },
+  chartIconContainer: {
     width: 48,
     height: 48,
     borderRadius: 24,
+    backgroundColor: 'rgba(255,255,255,0.2)',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 16,
   },
-  optionText: {
-    fontSize: 16,
+
+  // Status Grid
+  statusGrid: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  statusCard: {
+    flex: 1,
+    backgroundColor: colors.surface,
+    borderRadius: 12,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  statusCardActive: {
+    borderColor: colors.primary,
+    borderWidth: 2,
+  },
+  statusCardActiveAccepted: {
+    borderColor: '#4CAF50',
+    borderWidth: 2,
+  },
+  statusCardActivePending: {
+    borderColor: '#2196F3',
+    borderWidth: 2,
+  },
+  statusCardActiveRejected: {
+    borderColor: '#FF9800',
+    borderWidth: 2,
+  },
+  statusCardTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  statusCardNumber: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#1F2937',
+  },
+  statusCardIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  statusCardLabel: {
+    fontSize: 11,
+    fontWeight: '500',
+    textAlign: 'left',
+  },
+
+  // Section Header
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 12,
+    marginBottom: 8,
+  },
+  viewAllLink: {
+    fontSize: 13,
+    color: colors.primary,
     fontWeight: '600',
+  },
+  sectionTitleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  sectionTitle: {
+    fontSize: 15,
+    fontWeight: 'bold',
     color: colors.text.primary,
   },
-  logoutButton: {
+
+  // Product Type Picker Styles
+  pickerContainer: {
+    marginBottom: 16,
+  },
+  pickerButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+  },
+  pickerText: {
+    fontSize: 16,
+    color: colors.text.primary,
+    flex: 1,
+  },
+  typeOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  typeOptionSelected: {
+    backgroundColor: '#F3E5F5',
+  },
+  typeOptionText: {
+    fontSize: 16,
+    color: colors.text.primary,
+    flex: 1,
+  },
+  typeOptionTextSelected: {
+    color: colors.primary,
+    fontWeight: '600',
+  },
+
+  // Search Bar Styles
+  searchBarContainer: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: '#F0FDF4',
+  },
+  searchInputWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: 16,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 16,
+    color: colors.text.primary,
+    paddingVertical: 12,
+  },
+  searchIcon: {
+    marginLeft: 12,
+  },
+
+  // Order Action Buttons Styles
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 20,
+    gap: 12,
+  },
+  actionButton: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: colors.errorLight,
-    padding: 16,
-    borderRadius: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 8,
     gap: 8,
-    marginTop: 20,
   },
-  logoutText: {
-    fontSize: 16,
+  actionButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
     fontWeight: '600',
-    color: colors.error,
+  },
+  acceptButton: {
+    backgroundColor: colors.success,
+  },
+  rejectButton: {
+    backgroundColor: colors.error,
+  },
+  completeButton: {
+    backgroundColor: colors.primary,
+  },
+  completedButton: {
+    backgroundColor: colors.success,
+  },
+  rejectedButton: {
+    backgroundColor: colors.error,
   },
 });

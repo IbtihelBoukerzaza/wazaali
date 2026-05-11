@@ -1,19 +1,41 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../utils/colors';
+import { useAuth } from '../context/AuthContext';
+import { subscribeToNotifications } from '../services/firestoreService';
+import NotificationDropdown from '../components/NotificationDropdown';
 
 export default function HomeScreen({ navigation }) {
+  const [notifications, setNotifications] = useState([]);
+  const { user } = useAuth();
+
+  useEffect(() => {
+    if (user) {
+      const unsub = subscribeToNotifications(user.uid, (notifs) => {
+        setNotifications(notifs);
+      });
+      return () => unsub();
+    }
+  }, [user]);
+
+  const handleNotificationPress = () => {
+    navigation.navigate('طلباتي');
+  };
+
   return (
     <View style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
+        <NotificationDropdown
+          notifications={notifications}
+          userId={user?.uid}
+          onNotificationPress={handleNotificationPress}
+          onViewAllPress={() => navigation.navigate('Notifications')}
+        />
+        <Text style={styles.headerTitle}>وزعلي</Text>
         <TouchableOpacity style={styles.menuButton}>
           <Ionicons name="menu" size={24} color={colors.text.primary} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>وزعلي</Text>
-        <TouchableOpacity style={styles.bellButton}>
-          <Ionicons name="notifications-outline" size={24} color={colors.primary} />
         </TouchableOpacity>
       </View>
 
@@ -150,9 +172,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 20,
-    paddingTop: 60,
-    paddingBottom: 20,
+    paddingTop: 25,
+    paddingBottom: 8,
     backgroundColor: colors.background,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
   },
   menuButton: {
     width: 44,
@@ -163,24 +187,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   headerTitle: {
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: 'bold',
     color: colors.text.primary,
-  },
-  bellButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: colors.primaryLight,
-    justifyContent: 'center',
-    alignItems: 'center',
   },
   scrollContent: {
     flex: 1,
   },
   welcomeSection: {
     paddingHorizontal: 20,
-    paddingBottom: 20,
+    paddingTop: 32,
+    paddingBottom: 24,
   },
   welcomeTitle: {
     fontSize: 24,

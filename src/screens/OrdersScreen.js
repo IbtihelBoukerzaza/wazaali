@@ -2,8 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Modal } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../utils/colors';
-import { subscribeToShopOrders, subscribeToNotifications, markAllNotificationsAsRead } from '../services/firestoreService';
+import { subscribeToShopOrders, subscribeToNotifications } from '../services/firestoreService';
 import { useAuth } from '../context/AuthContext';
+import NotificationDropdown from '../components/NotificationDropdown';
 
 export default function OrdersScreen() {
   const [orders, setOrders] = useState([]);
@@ -33,7 +34,7 @@ export default function OrdersScreen() {
     
     const unsubNotifs = subscribeToNotifications(user.uid, (notifs) => {
       console.log('OrdersScreen - received notifications:', notifs.length);
-      setNotifications(notifs.filter(n => !n.read));
+      setNotifications(notifs);
       hasReceivedNotifs = true;
       if (hasReceivedOrders) {
         setLoading(false);
@@ -82,7 +83,7 @@ export default function OrdersScreen() {
       case 'rejected':
         return 'مرفوض';
       case 'completed':
-        return 'مكتمل';
+        return 'تم التوصيل';
       default:
         return status;
     }
@@ -105,13 +106,22 @@ export default function OrdersScreen() {
     return date.toLocaleDateString('ar-DZ', { month: 'short', day: 'numeric' });
   };
 
-  const filterOptions = [
-    { id: 'all', label: 'الكل', count: orders.length },
-    { id: 'pending', label: 'قيد الانتظار', count: orders.filter(o => o.status === 'pending').length },
-    { id: 'accepted', label: 'مقبول', count: orders.filter(o => o.status === 'accepted').length },
-    { id: 'completed', label: 'مكتمل', count: orders.filter(o => o.status === 'completed').length },
-    { id: 'rejected', label: 'مرفوض', count: orders.filter(o => o.status === 'rejected').length },
-  ];
+  // Calculate order counts
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayOrders = orders.filter(o => {
+    const orderDate = new Date(o.createdAt);
+    orderDate.setHours(0, 0, 0, 0);
+    return orderDate.getTime() === today.getTime();
+  }).length;
+
+  const orderCounts = {
+    all: orders.length,
+    pending: orders.filter(o => o.status === 'pending').length,
+    accepted: orders.filter(o => o.status === 'accepted').length,
+    completed: orders.filter(o => o.status === 'completed').length,
+    rejected: orders.filter(o => o.status === 'rejected').length,
+  };
 
   const filteredOrders = activeFilter === 'all' ? orders : orders.filter(o => o.status === activeFilter);
   const unreadCount = notifications.length;
@@ -120,7 +130,14 @@ export default function OrdersScreen() {
     return (
       <View style={styles.container}>
         <View style={styles.header}>
+          <TouchableOpacity style={styles.menuButton}>
+            <Ionicons name="menu" size={24} color={colors.text.primary} />
+          </TouchableOpacity>
           <Text style={styles.headerTitle}>طلباتي</Text>
+          <NotificationDropdown
+            notifications={notifications}
+            userId={user?.uid}
+          />
         </View>
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={colors.primary} />
@@ -133,84 +150,146 @@ export default function OrdersScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
+        <NotificationDropdown
+          notifications={notifications}
+          userId={user?.uid}
+        />
         <Text style={styles.headerTitle}>طلباتي</Text>
-        <View style={styles.headerButtons}>
-          <TouchableOpacity style={styles.refreshButton} onPress={() => {
-            setLoading(true);
-            // Force re-subscription by toggling user dependency
-            const tempUser = user;
-            if (tempUser) {
-              subscribeToShopOrders(tempUser.uid, (data) => {
-                setOrders(data);
-                setLoading(false);
-              });
-              subscribeToNotifications(tempUser.uid, (notifs) => {
-                setNotifications(notifs.filter(n => !n.read));
-              });
-            }
-          }}>
-            <Ionicons name="refresh" size={20} color={colors.primary} />
+        <TouchableOpacity style={styles.menuButton}>
+          <Ionicons name="menu" size={24} color={colors.text.primary} />
+        </TouchableOpacity>
+      </View>
+
+      {/* Dashboard Stats Header */}
+      <View style={styles.dashboardHeader}>
+        {/* Purple Stats Card */}
+        <View style={styles.mainStatsCard}>
+          <View style={styles.mainStatsContent}>
+            <View style={styles.statItem}>
+              <View style={styles.statIconContainer}>
+                <Ionicons name="bag" size={24} color={colors.primary} />
+              </View>
+              <View>
+                <Text style={styles.statLabelWhite}>إجمالي الطلبات</Text>
+                <Text style={styles.statValueWhite}>{orders.length}</Text>
+                <Text style={styles.statSubtextWhite}>هذا الشهر</Text>
+              </View>
+            </View>
+            <View style={styles.statDivider} />
+            <View style={styles.statItem}>
+              <View>
+                <Text style={styles.statLabelWhite}>طلبات اليوم</Text>
+                <Text style={styles.statValueWhiteSmall}>{todayOrders}</Text>
+              </View>
+            </View>
+          </View>
+          <View style={styles.chartIconContainer}>
+            <Ionicons name="trending-up" size={24} color="#FFFFFF" />
+          </View>
+        </View>
+
+        {/* Status Cards Grid */}
+        <View style={styles.statusGrid}>
+          <TouchableOpacity
+            style={[styles.statusCard, activeFilter === 'completed' && styles.statusCardActive]}
+            onPress={() => setActiveFilter(activeFilter === 'completed' ? 'all' : 'completed')}
+          >
+            <View style={styles.statusCardTop}>
+              <Text style={styles.statusCardNumber}>{orderCounts.completed}</Text>
+              <View style={[styles.statusCardIcon, { backgroundColor: '#F3E5F5' }]}>
+                <Ionicons name="car" size={20} color={colors.primary} />
+              </View>
+            </View>
+            <Text style={[styles.statusCardLabel, { color: colors.primary }]}>تم التوصيل</Text>
           </TouchableOpacity>
-          {unreadCount > 0 && (
-            <TouchableOpacity style={styles.notifBadge} onPress={async () => {
-              try {
-                await markAllNotificationsAsRead(user.uid);
-                setNotifications([]);
-              } catch (error) {
-                console.error('Error marking notifications as read:', error);
-              }
-            }}>
-              <Ionicons name="notifications" size={16} color="#FFFFFF" />
-              <Text style={styles.notifBadgeText}>{unreadCount}</Text>
-            </TouchableOpacity>
-          )}
+
+          <TouchableOpacity
+            style={[styles.statusCard, activeFilter === 'accepted' && styles.statusCardActiveAccepted]}
+            onPress={() => setActiveFilter(activeFilter === 'accepted' ? 'all' : 'accepted')}
+          >
+            <View style={styles.statusCardTop}>
+              <Text style={styles.statusCardNumber}>{orderCounts.accepted}</Text>
+              <View style={[styles.statusCardIcon, { backgroundColor: '#E8F5E9' }]}>
+                <Ionicons name="checkmark-circle" size={20} color="#4CAF50" />
+              </View>
+            </View>
+            <Text style={[styles.statusCardLabel, { color: '#4CAF50' }]}>مقبولة</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.statusCard, activeFilter === 'pending' && styles.statusCardActivePending]}
+            onPress={() => setActiveFilter(activeFilter === 'pending' ? 'all' : 'pending')}
+          >
+            <View style={styles.statusCardTop}>
+              <Text style={styles.statusCardNumber}>{orderCounts.pending}</Text>
+              <View style={[styles.statusCardIcon, { backgroundColor: '#E3F2FD' }]}>
+                <Ionicons name="document-text" size={20} color="#2196F3" />
+              </View>
+            </View>
+            <Text style={[styles.statusCardLabel, { color: '#2196F3' }]}>طلبات جديدة</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.statusCard, activeFilter === 'rejected' && styles.statusCardActiveRejected]}
+            onPress={() => setActiveFilter(activeFilter === 'rejected' ? 'all' : 'rejected')}
+          >
+            <View style={styles.statusCardTop}>
+              <Text style={styles.statusCardNumber}>{orderCounts.rejected}</Text>
+              <View style={[styles.statusCardIcon, { backgroundColor: '#FFF3E0' }]}>
+                <Ionicons name="close-circle" size={20} color="#FF9800" />
+              </View>
+            </View>
+            <Text style={[styles.statusCardLabel, { color: '#FF9800' }]}>مرفوضة</Text>
+          </TouchableOpacity>
         </View>
       </View>
 
-      {/* Filter Tabs */}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterContainer}>
-        {filterOptions.map((filter) => (
-          <TouchableOpacity
-            key={filter.id}
-            style={[styles.filterPill, activeFilter === filter.id && styles.filterPillActive]}
-            onPress={() => setActiveFilter(filter.id)}
-          >
-            <Text style={[styles.filterPillText, activeFilter === filter.id && styles.filterPillTextActive]}>{filter.label}</Text>
-            <View style={[styles.filterCount, activeFilter === filter.id && styles.filterCountActive]}>
-              <Text style={[styles.filterCountText, activeFilter === filter.id && styles.filterCountTextActive]}>{filter.count}</Text>
-            </View>
-          </TouchableOpacity>
-        ))}
-      </ScrollView>
+      {/* Recent Orders Section Header */}
+      <View style={styles.sectionHeader}>
+        <TouchableOpacity onPress={() => setActiveFilter('all')}>
+          <Text style={styles.viewAllLink}>عرض الكل</Text>
+        </TouchableOpacity>
+        <View style={styles.sectionTitleContainer}>
+          <Text style={styles.sectionTitle}>الطلبات الحديثة</Text>
+          <Ionicons name="list" size={18} color={colors.text.secondary} style={{ marginLeft: 6 }} />
+        </View>
+      </View>
 
-      <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView 
+        style={styles.content} 
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.scrollContent}
+      >
         {filteredOrders.length === 0 ? (
           <View style={styles.emptyContainer}>
             <Ionicons name="cart-outline" size={56} color={colors.text.light} />
             <Text style={styles.emptyText}>{activeFilter === 'all' ? 'لا توجد طلبات حتى الآن' : 'لا توجد طلبات بهذه الحالة'}</Text>
           </View>
         ) : (
-          filteredOrders.map((order) => (
-            <TouchableOpacity key={order.id} style={styles.orderCard} onPress={() => setSelectedOrder(order)} activeOpacity={0.7}>
-              <View style={styles.orderHeader}>
-                <Text style={styles.orderId}>طلب #{order.id.slice(-6)}</Text>
-                <View style={[styles.statusBadge, { backgroundColor: getStatusColor(order.status) }]}>
-                  <Text style={styles.statusText}>{getStatusText(order.status)}</Text>
+          <>
+            {filteredOrders.map((order) => (
+              <TouchableOpacity key={order.id} style={styles.orderCard} onPress={() => setSelectedOrder(order)} activeOpacity={0.7}>
+                <View style={styles.orderHeader}>
+                  <Text style={styles.orderId}>طلب #{order.id.slice(-6)}</Text>
+                  <View style={[styles.statusBadge, { backgroundColor: getStatusColor(order.status) }]}>
+                    <Text style={styles.statusText}>{getStatusText(order.status)}</Text>
+                  </View>
                 </View>
-              </View>
-              <View style={styles.orderInfo}>
-                <Ionicons name="business" size={16} color={colors.text.secondary} />
-                <Text style={styles.factoryName}>{order.dairyName || 'الملبنة'}</Text>
-              </View>
-              <Text style={styles.orderProducts} numberOfLines={1}>
-                {order.items?.map(i => `${i.name} ×${i.quantity}`).join('، ') || 'منتجات'}
-              </Text>
-              <View style={styles.orderFooter}>
-                <Text style={styles.orderDate}>{formatOrderTime(order.createdAt)}</Text>
-                <Text style={styles.orderTotal}>{calculateTotal(order.items)} دج</Text>
-              </View>
-            </TouchableOpacity>
-          ))
+                <View style={styles.orderInfo}>
+                  <Ionicons name="business" size={16} color={colors.text.secondary} />
+                  <Text style={styles.factoryName}>{order.dairyName || 'الملبنة'}</Text>
+                </View>
+                <Text style={styles.orderProducts} numberOfLines={1}>
+                  {order.items?.map(i => `${i.name} ×${i.quantity}`).join('، ') || 'منتجات'}
+                </Text>
+                <View style={styles.orderFooter}>
+                  <Text style={styles.orderDate}>{formatOrderTime(order.createdAt)}</Text>
+                  <Text style={styles.orderTotal}>{calculateTotal(order.items)} دج</Text>
+                </View>
+              </TouchableOpacity>
+            ))}
+            <View style={styles.bottomSpacer} />
+          </>
         )}
       </ScrollView>
 
@@ -285,45 +364,27 @@ const styles = StyleSheet.create({
   },
   header: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: 20,
-    paddingTop: 60,
-    paddingBottom: 16,
-    backgroundColor: colors.surface,
+    paddingTop: 25,
+    paddingBottom: 8,
+    backgroundColor: colors.background,
     borderBottomWidth: 1,
-    borderBottomColor: colors.border,
+    borderBottomColor: '#E5E7EB',
+  },
+  menuButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#F0F0F0',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   headerTitle: {
-    fontSize: 24,
+    fontSize: 20,
     fontWeight: 'bold',
     color: colors.text.primary,
-  },
-  notifBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.error,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 16,
-    gap: 4,
-  },
-  notifBadgeText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: 'bold',
-  },
-  headerButtons: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  refreshButton: {
-    padding: 8,
-    backgroundColor: colors.surface,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: colors.border,
   },
   filterContainer: {
     paddingHorizontal: 16,
@@ -374,6 +435,12 @@ const styles = StyleSheet.create({
   content: {
     flex: 1,
     padding: 20,
+  },
+  scrollContent: {
+    paddingBottom: 40,
+  },
+  bottomSpacer: {
+    height: 30,
   },
   loadingContainer: {
     flex: 1,
@@ -543,5 +610,151 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: 'bold',
     color: colors.primary,
+  },
+
+  // Dashboard Styles
+  dashboardHeader: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 8,
+  },
+  mainStatsCard: {
+    backgroundColor: colors.primary,
+    borderRadius: 16,
+    padding: 20,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  mainStatsContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  statItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  statIconContainer: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 12,
+  },
+  statLabelWhite: {
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.85)',
+    marginBottom: 4,
+  },
+  statValueWhite: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+  },
+  statValueWhiteSmall: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+  },
+  statSubtextWhite: {
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.6)',
+    marginTop: 2,
+  },
+  statDivider: {
+    width: 1,
+    height: 50,
+    backgroundColor: 'rgba(255,255,255,0.3)',
+    marginHorizontal: 20,
+  },
+  chartIconContainer: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+
+  // Status Grid
+  statusGrid: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  statusCard: {
+    flex: 1,
+    backgroundColor: colors.surface,
+    borderRadius: 12,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  statusCardActive: {
+    borderColor: colors.primary,
+    borderWidth: 2,
+  },
+  statusCardActiveAccepted: {
+    borderColor: '#4CAF50',
+    borderWidth: 2,
+  },
+  statusCardActivePending: {
+    borderColor: '#2196F3',
+    borderWidth: 2,
+  },
+  statusCardActiveRejected: {
+    borderColor: '#FF9800',
+    borderWidth: 2,
+  },
+  statusCardTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  statusCardNumber: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#1F2937',
+  },
+  statusCardIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  statusCardLabel: {
+    fontSize: 11,
+    fontWeight: '500',
+    textAlign: 'left',
+  },
+
+  // Section Header
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    marginTop: 8,
+  },
+  viewAllLink: {
+    fontSize: 13,
+    color: colors.primary,
+    fontWeight: '600',
+  },
+  sectionTitleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  sectionTitle: {
+    fontSize: 15,
+    fontWeight: 'bold',
+    color: colors.text.primary,
   },
 });

@@ -2,8 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../utils/colors';
-import { getAllDairies, subscribeToNotifications, markAllNotificationsAsRead } from '../services/firestoreService';
+import { getAllDairies, subscribeToNotifications } from '../services/firestoreService';
 import { useAuth } from '../context/AuthContext';
+import NotificationDropdown from '../components/NotificationDropdown';
 
 export default function FactoriesScreen({ navigation }) {
   const [searchText, setSearchText] = useState('');
@@ -16,7 +17,7 @@ export default function FactoriesScreen({ navigation }) {
     loadDairies();
     if (user) {
       const unsub = subscribeToNotifications(user.uid, (notifs) => {
-        setNotifications(notifs.filter(n => !n.read));
+        setNotifications(notifs);
       });
       return () => unsub();
     }
@@ -38,12 +39,7 @@ export default function FactoriesScreen({ navigation }) {
     (dairy.wilaya || '').includes(searchText)
   );
 
-  const unreadCount = notifications.length;
-
-  const handleBellPress = async () => {
-    if (unreadCount > 0) {
-      await markAllNotificationsAsRead(user.uid);
-    }
+  const handleNotificationPress = () => {
     navigation.navigate('طلباتي');
   };
 
@@ -51,17 +47,15 @@ export default function FactoriesScreen({ navigation }) {
     <View style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
+        <NotificationDropdown
+          notifications={notifications}
+          userId={user?.uid}
+          onNotificationPress={handleNotificationPress}
+          onViewAllPress={() => navigation.navigate('Notifications')}
+        />
+        <Text style={styles.headerTitle}>الملابن</Text>
         <TouchableOpacity style={styles.menuButton}>
           <Ionicons name="menu" size={24} color={colors.text.primary} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>الملابن</Text>
-        <TouchableOpacity style={styles.bellButton} onPress={handleBellPress}>
-          <Ionicons name="notifications-outline" size={24} color={colors.primary} />
-          {unreadCount > 0 && (
-            <View style={styles.notifBadge}>
-              <Text style={styles.notifBadgeText}>{unreadCount}</Text>
-            </View>
-          )}
         </TouchableOpacity>
       </View>
 
@@ -146,9 +140,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 20,
-    paddingTop: 60,
-    paddingBottom: 20,
+    paddingTop: 25,
+    paddingBottom: 8,
     backgroundColor: colors.background,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
   },
   menuButton: {
     width: 44,
@@ -159,36 +155,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   headerTitle: {
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: 'bold',
     color: colors.text.primary,
   },
-  bellButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: colors.primaryLight,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  notifBadge: {
-    position: 'absolute',
-    top: -4,
-    right: -4,
-    backgroundColor: colors.error,
-    minWidth: 20,
-    height: 20,
-    borderRadius: 10,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  notifBadgeText: {
-    color: '#FFFFFF',
-    fontSize: 11,
-    fontWeight: 'bold',
-  },
   welcomeSection: {
     paddingHorizontal: 20,
+    paddingTop: 32,
     paddingBottom: 20,
     backgroundColor: colors.background,
     alignItems: 'center',

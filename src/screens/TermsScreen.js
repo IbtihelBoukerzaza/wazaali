@@ -144,8 +144,8 @@ export default function TermsScreen({ navigation }) {
         <TouchableOpacity
           style={styles.acceptButton}
           onPress={() => {
-            // Pass back that terms were accepted
-            navigation.navigate('Signup', { termsAccepted: true });
+            global.__termsAcceptedFromTermsScreen = true;
+            navigation.goBack();
           }}
         >
           <Text style={styles.acceptButtonText}>فهمت وأوافق</Text>
